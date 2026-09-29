@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Inšpektor siete
+GenericName=Network Inspector
+Comment=Čo všetko je v sieti: telefóny, televízory, tlačiarne, receivery — identifikácia, premenovanie, zvuk do siete
+Exec=latte-app inspektor
+Icon=network-workgroup
+Categories=Network;Settings;
+Keywords=siet;network inspector;eset;zariadenia v sieti;router;wifi;

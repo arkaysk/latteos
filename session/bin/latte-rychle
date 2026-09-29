@@ -1,0 +1,9 @@
+#!/bin/sh
+# latte-rychle — ostrov Zariadení na lište: otvorí/zavrie rýchle nastavenia v tvare L (rychle.qml beží na pozadí,
+# prepína sa cez IPC Quickshellu; ak nebeží, spustí sa rovno otvorený).
+qml=/usr/share/latteos/apps/rychle.qml
+pid=$(pgrep -f "qs -n -p $qml" | head -1)
+if [ -n "$pid" ]; then
+    exec qs ipc --pid "$pid" call rychle "${1:-prepni}"
+fi
+setsid latte-app rychle --ukaz >/dev/null 2>&1 &

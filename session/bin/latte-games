@@ -1,0 +1,141 @@
+#!/usr/bin/python3
+"""latte-games — herná knižnica LatteOS (Herňa, Super+G): nainštalované hry zo Steamu a Heroicu.
+
+  latte-games list          JSON: [{id, name, source, cover, size, launch: [argv]}]
+  latte-games play ID       zapne herný režim (latte.game), profil Výkon a vyššiu váhu CPU pre hru; po hre všetko vráti
+
+Steam: steamapps/appmanifest_*.acf v knižniciach (aj Flatpak Steam), obal z appcache/librarycache.
+Heroic (Epic, GOG, Amazon): ~/.config/heroic/*/installed.json (aj Flatpak). Nič sa nesťahuje z internetu.
+"""
+import glob, json, os, re, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+STEAM_ROOTS = [HOME + "/.local/share/Steam", HOME + "/.steam/steam",
+               HOME + "/.var/app/com.valvesoftware.Steam/.local/share/Steam"]
+HEROIC_CFG = [HOME + "/.config/heroic", HOME + "/.var/app/com.heroicgameslauncher.hgl/config/heroic"]
+# nástroje Steamu, nie hry
+SKIP = re.compile(r"Proton|Steam Linux Runtime|Steamworks Common|SteamVR|Steam Audio", re.I)
+
+
+def vdf_values(text, key):
+    return re.findall(r'"%s"\s+"([^"]*)"' % key, text, re.I)
+
+
+def steam_libraries(root):
+    libs = {os.path.join(root, "steamapps")}
+    vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+    try:
+        for p in vdf_values(open(vdf, encoding="utf-8", errors="replace").read(), "path"):
+            libs.add(os.path.join(p, "steamapps"))
+    except OSError:
+        pass
+    return [l for l in libs if os.path.isdir(l)]
+
+
+def steam_games():
+    out, seen = [], set()
+    for root in STEAM_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        flatpak = "/.var/app/" in root
+        for lib in steam_libraries(root):
+            for acf in glob.glob(lib + "/appmanifest_*.acf"):
+                try:
+                    t = open(acf, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                appid = (vdf_values(t, "appid") or [""])[0]
+                name = (vdf_values(t, "name") or [appid])[0]
+                if not appid or appid in seen or SKIP.search(name):
+                    continue
+                seen.add(appid)
+                cover = ""
+                for c in ("%s_library_600x900.jpg" % appid, "%s/library_600x900.jpg" % appid, "%s_header.jpg" % appid):
+                    p = os.path.join(root, "appcache", "librarycache", c)
+                    if os.path.exists(p):
+                        cover = p
+                        break
+                size = int((vdf_values(t, "SizeOnDisk") or ["0"])[0] or 0)
+                launch = (["flatpak", "run", "com.valvesoftware.Steam"] if flatpak else ["steam"]) + ["steam://rungameid/" + appid]
+                out.append({"id": "steam:" + appid, "name": name, "source": "Steam", "cover": cover, "size": size, "launch": launch})
+    return out
+
+
+def heroic_games():
+    out = []
+    for cfg in HEROIC_CFG:
+        flatpak = "/.var/app/" in cfg
+        for store, fname in (("legendary", "legendaryConfig/legendary/installed.json"), ("gog", "gog_store/installed.json"),
+                             ("nile", "nile_config/nile/installed.json")):
+            try:
+                data = json.load(open(os.path.join(cfg, fname)))
+            except (OSError, ValueError):
+                continue
+            items = data.get("installed", data) if isinstance(data, dict) else data
+            if isinstance(items, dict):
+                items = list(items.values())
+            for g in items or []:
+                gid = g.get("app_name") or g.get("appName") or g.get("id")
+                if not gid:
+                    continue
+                runner = {"legendary": "legendary", "gog": "gog", "nile": "nile"}[store]
+                url = "heroic://launch/%s/%s" % (runner, gid)
+                launch = (["flatpak", "run", "com.heroicgameslauncher.hgl"] if flatpak else ["heroic"]) + ["--no-gui", url]
+                out.append({"id": "heroic:%s:%s" % (runner, gid), "name": g.get("title") or gid,
+                            "source": {"legendary": "Epic", "gog": "GOG", "nile": "Amazon"}[store], "cover": "",
+                            "size": int(g.get("install_size_bytes") or 0) if str(g.get("install_size_bytes", "0")).isdigit() else 0,
+                            "launch": launch})
+    return out
+
+
+def games():
+    g = steam_games() + heroic_games()
+    g.sort(key=lambda x: x["name"].lower())
+    return g
+
+
+def hypr(code):
+    subprocess.run(["hyprctl", "eval", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def main(a):
+    if a[:1] == ["list"]:
+        print(json.dumps(games(), ensure_ascii=False))
+        return 0
+    if len(a) == 2 and a[0] == "play":
+        g = next((x for x in games() if x["id"] == a[1]), None)
+        if not g:
+            print("hra sa nenašla: " + a[1], file=sys.stderr)
+            return 1
+        hypr("latte.game(true)")
+        # „hra má prednosť“ (F5): vlastný scope s vyššou váhou CPU (ostatné aplikácie majú 100) a profil Výkon
+        prof = subprocess.run(["powerprofilesctl", "get"], capture_output=True, text=True).stdout.strip()
+        subprocess.run(["powerprofilesctl", "set", "performance"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        unit = "latte-hra-" + re.sub(r"[^A-Za-z0-9]", "-", g["id"])
+        launch = ["systemd-run", "--user", "--scope", "--collect", "-q", "--unit=" + unit, "-p", "CPUWeight=1000", "--"] + g["launch"]
+        if subprocess.run(["systemd-run", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+            launch = g["launch"]
+        subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        # herný režim vypnúť, keď hra skončí: Steam/Heroic spúšťajú hru ako vlastný proces → čakať na
+        # okno na celú obrazovku a potom na jeho zatvorenie (najviac 12 h)
+        time.sleep(20)
+        deadline = time.time() + 12 * 3600
+        while time.time() < deadline:
+            r = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True)
+            try:
+                full = [c for c in json.loads(r.stdout or "[]") if c.get("fullscreen")]
+            except ValueError:
+                full = []
+            if not full:
+                break
+            time.sleep(10)
+        hypr("latte.game(false)")
+        if prof:
+            subprocess.run(["powerprofilesctl", "set", prof], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

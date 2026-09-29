@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""latte-netd — okamžité tlačidlo NET (systémová služba, root; latte-netd.service).
+
+Každú sekundu prečíta pre každého prihláseného používateľa zoznam aplikácií s vypnutým NET
+(~/.config/latteos/net-vypnute, riadok = id aplikácie; zapisuje ho latte-net) a nájde ich cgroup:
+  app-flatpak-<ID>-<n>.scope   (každý Flatpak beží vo vlastnom scope)
+  app-latte-<ID>-<n>.scope     (natívne aplikácie presunie do scope latte-net pri vypnutí NET)
+Pre ne udržiava tabuľku nftables `inet latte_net`: odchádzajúca aj prichádzajúca prevádzka ich socketov
+sa zahodí (okrem lo), a novo zablokovaným hneď ukončí otvorené spojenia (ss -K). Zapnutie NET pravidlá zmaže.
+Pravidlá sa týkajú iba cgroup pod user@UID.service daného používateľa — nikto nemôže zablokovať cudziu aplikáciu.
+
+  latte-netd            beh (služba)
+  latte-netd stav       vypíše zablokované cgroup
+"""
+import os, pwd, re, subprocess, sys, time
+
+TABLE = "latte_net"
+CG = "/sys/fs/cgroup"
+
+
+def run(args, inp=None):
+    return subprocess.run(args, input=inp, capture_output=True, text=True)
+
+
+def wanted():
+    """Množina ciest cgroup (relatívne k /sys/fs/cgroup), ktoré majú mať vypnutý internet."""
+    out = set()
+    try:
+        uids = [int(d) for d in os.listdir("/run/user") if d.isdigit()]
+    except OSError:
+        uids = []
+    for uid in uids:
+        try:
+            pw = pwd.getpwuid(uid)
+        except KeyError:
+            continue
+        lst = os.path.join(pw.pw_dir, ".config", "latteos", "net-vypnute")
+        try:
+            st = os.stat(lst)
+            if st.st_uid != uid:            # iba súbor, ktorý patrí tomu používateľovi
+                continue
+            ids = {l.strip() for l in open(lst, encoding="utf-8", errors="replace") if l.strip() and not l.startswith("#")}
+        except OSError:
+            continue
+        if not ids:
+            continue
+        base = "user.slice/user-%d.slice/user@%d.service/app.slice" % (uid, uid)
+        try:
+            scopes = os.listdir(os.path.join(CG, base))
+        except OSError:
+            continue
+        for sc in scopes:
+            m = re.match(r"^app-(?:flatpak|latte)-(.+)-\d+\.scope$", sc)
+            if m and m.group(1) in ids:
+                out.add(base + "/" + sc)
+    return out
+
+
+def apply(paths):
+    """Tabuľku postaviť celú naraz (nft -f), aby nevzniklo okno bez pravidiel. Prvé „table inet X“ tabuľku vytvorí,
+    ak ešte nie je, takže „delete“ nezlyhá ani po čistom štarte (overené 26. 9. naostro: bez tabuľky aj s ňou)."""
+    rules = []
+    for p in sorted(paths):
+        lvl = p.count("/") + 1
+        rules.append('    socket cgroupv2 level %d "%s" drop' % (lvl, p))
+    body = "\n".join(rules)
+    conf = ("table inet %s\ndelete table inet %s\ntable inet %s {\n"
+            "  chain out {\n    type filter hook output priority 0; policy accept;\n    oif lo accept\n%s\n  }\n"
+            "  chain inp {\n    type filter hook input priority 0; policy accept;\n    iif lo accept\n%s\n  }\n}\n") % (TABLE, TABLE, TABLE, body, body)
+    r = run(["nft", "-f", "-"], conf)
+    if r.returncode:
+        print("latte-netd: nft:", r.stderr.strip()[:300], file=sys.stderr, flush=True)
+    return r.returncode == 0
+
+
+def kill_sockets(p):
+    run(["ss", "-K", "-a", "cgroup", "/" + p])
+
+
+def main(a):
+    if a[:1] == ["stav"]:
+        for p in sorted(wanted()):
+            print(p)
+        return 0
+    if os.geteuid() != 0:
+        print("latte-netd musí bežať ako root (systemctl enable --now latte-netd)", file=sys.stderr)
+        return 1
+    cur = None
+    while True:
+        try:
+            w = wanted()
+            if w != cur:
+                if apply(w):
+                    for p in w - (cur or set()):
+                        kill_sockets(p)
+                        print("NET vypnutý:", p.split("/")[-1], flush=True)
+                    for p in (cur or set()) - w:
+                        print("NET zapnutý:", p.split("/")[-1], flush=True)
+                    cur = w
+        except Exception as e:                  # služba nesmie spadnúť kvôli jednému používateľovi
+            print("latte-netd:", e, file=sys.stderr, flush=True)
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LatteOS SAFE — ponuka pravým klikom na plochu -->
+<openbox_menu>
+  <menu id="root-menu" label="LatteOS SAFE">
+    <item label="Ponuka SAFE (Super+Space)"><action name="Execute" command="foot -T 'LatteOS SAFE' -e latte-safe"/></item>
+    <item label="Terminál (Super+Enter)"><action name="Execute" command="foot"/></item>
+    <item label="Skúsiť NORMAL znova"><action name="Execute" command="latte-safe try-normal"/></item>
+    <separator/>
+    <item label="Odhlásiť"><action name="Exit"/></item>
+    <item label="Reštartovať"><action name="Execute" command="systemctl reboot"/></item>
+    <item label="Vypnúť"><action name="Execute" command="systemctl poweroff"/></item>
+  </menu>
+</openbox_menu>

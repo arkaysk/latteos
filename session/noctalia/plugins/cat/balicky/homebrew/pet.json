@@ -1,0 +1,28 @@
+{
+ "name": "Homebrew",
+ "about": "kávový sliz: naťahuje sa, prilepí a pritiahne",
+ "profile": "sliz",
+ "flyer": false,
+ "facing": "none",
+ "idle": [
+  "sedi",
+  "v-salke",
+  "rozliaty"
+ ],
+ "sleep": "rozliaty",
+ "move": [
+  "plazi",
+  "sedi"
+ ],
+ "frames": [
+  "hero",
+  "kvapka-1",
+  "kvapka-2",
+  "kvapka-3",
+  "natiahnuty",
+  "plazi",
+  "rozliaty",
+  "sedi",
+  "v-salke"
+ ]
+}

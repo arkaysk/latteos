@@ -1,0 +1,17 @@
+#!/bin/sh
+# latte-spustac — dlaždica aplikácií na lište (zadanie 24. 9. večer):
+#   plný App Manager je otvorený → iba ho vytiahne dopredu; inak otvorí/zavrie rýchle spustenie (spustac.qml
+#   beží na pozadí, prepína sa cez IPC Quickshellu; ak nebeží, spustí sa rovno otvorený).
+qml=/usr/share/latteos/apps/spustac.qml
+addr=$(hyprctl clients -j 2>/dev/null | python3 -c 'import json,sys
+for w in json.load(sys.stdin):
+    if w.get("title") == "Aplikácie — LatteOS": print(w["address"]); break' 2>/dev/null)
+if [ -n "$addr" ]; then
+    hyprctl eval "latte.win.activate(\"$addr\")" >/dev/null
+    exit 0
+fi
+pid=$(pgrep -f "qs -n -p $qml" | head -1)
+if [ -n "$pid" ]; then
+    exec qs ipc --pid "$pid" call spustac "${1:-prepni}"
+fi
+setsid latte-app spustac --ukaz >/dev/null 2>&1 &

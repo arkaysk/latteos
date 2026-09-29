@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Aplikácie
+GenericName=App Manager
+Comment=Objavovať, aktualizácie, nainštalované aplikácie, NET; Bude to fungovať?
+Exec=latte-app aplikacie check %f
+Icon=system-software-install
+Categories=System;PackageManager;
+Keywords=aplikacie;app manager;instalovat;obchod;flathub;flatpak;aktualizacie;
+MimeType=application/x-rpm;application/vnd.flatpak.ref;application/x-msdownload;application/vnd.android.package-archive;application/vnd.debian.binary-package;application/x-iso9660-appimage;

@@ -1,0 +1,885 @@
+#!/usr/bin/python3
+"""latte-apps — App Manager LatteOS (backend pre apps/aplikacie.qml a Nastavenia › Softvér).
+
+  latte-apps installed               JSON: nainštalované aplikácie (.desktop) so zdrojom (Flatpak / RPM / miestne) a veľkosťou
+  latte-apps updates                 JSON: dostupné aktualizácie (dnf z cache, Flatpak)
+  latte-apps search TEXT             JSON: Flathub (appstream) + balíky Fedory
+  latte-apps permissions APP_ID      JSON: oprávnenia Flatpak aplikácie (sieť, súbory, zariadenia…)
+  latte-apps plan APP_ID             JSON: Setup Plan — čo si aplikácia žiada (pred inštaláciou z Flathubu, inak nainštalovaná),
+                                     po položkách s rizikom a profilmi Dôveryhodná / Nedôveryhodná
+  latte-apps plan-apply APP_ID JSON  schváliť plán: JSON zoznam zamietnutých kľúčov → flatpak override --user (povolí ostatné)
+  latte-apps net APP_ID on|off       tlačidlo NET (latte-net: Flatpak override alebo bubblewrap bez siete)
+  latte-apps check SÚBOR             „Bude to fungovať?“ — JSON verdikt pre .flatpakref/.rpm/.AppImage/.exe/.apk/.deb…,
+                                     aj zložku (stiahnutá hra, CD/DVD), archív .zip/.rar/.7z a obraz .iso:
+                                     inštalátor Windows (setup.exe, repack s .bin), prenosná hra, hra pre Linux
+  latte-apps install flatpak ID      inštalácia z Flathubu pre používateľa (bez roota)
+  latte-apps remove flatpak ID       odinštalovanie Flatpaku používateľa
+
+  latte-apps store home              JSON: obchod — trendy, obľúbené, nové, aktualizované (Flathub API, cache 6 h)
+  latte-apps store category KAT      JSON: aplikácie kategórie (game, audiovideo, graphics, network, office, …)
+  latte-apps store search TEXT       JSON: vyhľadávanie vo Flathube (a balíky Fedory)
+  latte-apps store app ID            JSON: detail — popis, snímky obrazovky, vývojár, licencia, veľkosť, inštalácie, verzie
+  latte-apps latteos                 JSON: súčasti LatteOS — nainštalovaná verzia (commit) a čo je nové v repozitári
+  latte-apps drivers                 JSON: ovládače a firmvér — fwupd, grafika (NVIDIA/AMD/Intel), odporúčania
+  latte-apps defaults                JSON: predvolené aplikácie (prehliadač, pošta, súbory, obrázky, video, hudba, text, PDF, archívy)
+                                     s aktuálnou voľbou a kandidátmi podľa MimeType v .desktop (Nastavenia › Predvolené aplikácie)
+  latte-apps default KAT DESKTOP_ID  nastaví aplikáciu pre všetky typy kategórie (xdg-mime default → ~/.config/mimeapps.list)
+
+RPM (systém) inštaluje a odinštaluje grafický Inštalátor (latte-app instalator) cez sudo dnf.
+"""
+import glob, json, os, re, shutil, subprocess, sys
+
+HOME = os.path.expanduser("~")
+DESKTOP_DIRS = [
+    ("flatpak-user", HOME + "/.local/share/flatpak/exports/share/applications"),
+    ("flatpak", "/var/lib/flatpak/exports/share/applications"),
+    ("local", HOME + "/.local/share/applications"),
+    ("rpm", "/usr/share/applications"),
+]
+
+
+def sh(argv, timeout=60):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, "", str(e)
+
+
+def parse_desktop(path):
+    kv, section = {}, None
+    try:
+        for line in open(path, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if line.startswith("["):
+                section = line
+                continue
+            if section != "[Desktop Entry]" or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            kv.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
+    return kv
+
+
+# kategórie predvolených aplikácií: prvý typ určuje aktuálnu voľbu, nastavujú sa všetky
+DEFAULTS = [
+    ("web", "Webový prehliadač", "world", ["x-scheme-handler/https", "x-scheme-handler/http", "text/html", "application/xhtml+xml"]),
+    ("posta", "E-mail", "mail", ["x-scheme-handler/mailto"]),
+    ("subory", "Súbory", "folder", ["inode/directory"]),
+    ("obrazky", "Obrázky", "photo", ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif", "image/svg+xml"]),
+    ("video", "Video", "movie", ["video/mp4", "video/x-matroska", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"]),
+    ("hudba", "Hudba", "music", ["audio/mpeg", "audio/flac", "audio/ogg", "audio/x-wav", "audio/mp4", "audio/x-opus+ogg"]),
+    ("text", "Textový editor", "file-text", ["text/plain", "text/markdown", "application/x-shellscript"]),
+    ("pdf", "PDF a dokumenty", "file", ["application/pdf", "application/epub+zip"]),
+    ("archivy", "Archívy", "file-zip", ["application/zip", "application/x-7z-compressed", "application/x-tar", "application/gzip", "application/vnd.rar"]),
+]
+
+
+def _desktops():
+    """id → (meno, ikona, množina MimeType) pre viditeľné aplikácie; skoršie priečinky majú prednosť."""
+    out = {}
+    lang = (os.environ.get("LANG") or "sk").split("_")[0]
+    for _src, d in DESKTOP_DIRS:
+        for f in glob.glob(d + "/*.desktop"):
+            did = os.path.basename(f)
+            if did in out:
+                continue
+            kv = parse_desktop(f)
+            if kv.get("NoDisplay") == "true" or kv.get("Hidden") == "true" or kv.get("Type", "Application") != "Application":
+                continue
+            mimes = {m for m in kv.get("MimeType", "").split(";") if m}
+            out[did] = (kv.get("Name[%s]" % lang) or kv.get("Name") or did[:-8], kv.get("Icon", ""), mimes)
+    return out
+
+
+def defaults():
+    apps, res = _desktops(), []
+    for key, title, glyph, mimes in DEFAULTS:
+        rc, cur, _ = sh(["xdg-mime", "query", "default", mimes[0]], timeout=10)
+        cur = cur.strip() if rc == 0 else ""
+        opts = [{"id": did, "name": n, "icon": ic} for did, (n, ic, ms) in apps.items() if ms & set(mimes)]
+        opts.sort(key=lambda o: (o["id"] != cur, o["name"].lower()))
+        name = apps[cur][0] if cur in apps else (cur[:-8] if cur else "")
+        res.append({"key": key, "title": title, "glyph": glyph, "current": cur, "currentName": name, "options": opts, "types": len(mimes)})
+    return res
+
+
+def set_default(key, did):
+    for k, _t, _g, mimes in DEFAULTS:
+        if k == key:
+            if not re.match(r"^[A-Za-z0-9._+-]+\.desktop$", did):
+                return 2
+            rc = 0
+            for m in mimes:
+                rc |= sh(["xdg-mime", "default", did, m], timeout=10)[0]
+            if key == "web":
+                sh(["xdg-settings", "set", "default-web-browser", did], timeout=10)
+            return rc
+    return 2
+
+
+def human(n):
+    n = float(n or 0)
+    for u in ("B", "kB", "MB", "GB"):
+        if n < 1024:
+            return ("%.0f %s" if u in ("B", "kB") or n >= 10 else "%.1f %s") % (n, u)
+        n /= 1024
+    return "%.1f TB" % n
+
+
+def installed():
+    apps, seen, netoff = [], set(), set()
+    for src, d in DESKTOP_DIRS:
+        for f in sorted(glob.glob(d + "/*.desktop")):
+            base = os.path.basename(f)
+            if base in seen:
+                continue
+            kv = parse_desktop(f)
+            if kv.get("X-LatteOS-NET") == "off":      # prekrytie od latte-net: metadáta z pôvodného súboru, NET vypnutý
+                netoff.add(base[:-8])
+                continue
+            if kv.get("X-LatteOS-Sandbox") == "on":    # prekrytie Setup Planu (latte-sandbox): metadáta z pôvodného
+                continue
+            if kv.get("Type", "Application") != "Application" or kv.get("NoDisplay", "").lower() == "true" or kv.get("Hidden", "").lower() == "true":
+                continue
+            seen.add(base)
+            name = kv.get("Name[sk]") or kv.get("Name") or base
+            apps.append({"id": base[:-8], "desktop": f, "name": name, "comment": kv.get("Comment[sk]") or kv.get("Comment", ""),
+                         "exec": kv.get("Exec", ""), "icon": kv.get("Icon", ""), "categories": kv.get("Categories", ""),
+                         "source": "flatpak" if src.startswith("flatpak") else src, "scope": "user" if src in ("flatpak-user", "local") else "system",
+                         "package": "", "size": 0, "latteos": base.startswith("latteos-")})
+    # RPM: balík a veľkosť jedným volaním
+    rpm_apps = [a for a in apps if a["source"] == "rpm"]
+    if rpm_apps:
+        rc, out, _ = sh(["rpm", "-qf", "--qf", "%{NAME}|%{SIZE}\\n"] + [a["desktop"] for a in rpm_apps])
+        for a, line in zip(rpm_apps, out.splitlines()):
+            if "|" in line and "not owned" not in line and "nie je vlastnený" not in line:
+                a["package"], size = line.split("|", 1)
+                a["size"] = int(size or 0)
+            else:
+                a["source"] = "local"
+    # Flatpak: veľkosť z flatpak list
+    if shutil.which("flatpak"):
+        rc, out, _ = sh(["flatpak", "list", "--app", "--columns=application,size,installation,version"])
+        info = {}
+        for line in out.splitlines():
+            f = line.split("\t")
+            if len(f) >= 3:
+                info[f[0]] = f
+        for a in apps:
+            if a["source"] == "flatpak" and a["id"] in info:
+                a["package"] = a["id"]
+                a["sizeText"] = info[a["id"]][1]
+                a["version"] = info[a["id"]][3] if len(info[a["id"]]) > 3 else ""
+    for a in apps:
+        a.setdefault("sizeText", human(a["size"]) if a["size"] else "")
+        a["net"] = "off" if a["id"] in netoff else "on"
+    # Flatpak: NET z flatpak override
+    for a in apps:
+        if a["source"] == "flatpak":
+            rc, o, _ = sh(["flatpak", "override", "--user", "--show", a["id"]])
+            if re.search(r"^shared=.*!network", o, re.M):
+                a["net"] = "off"
+    apps.sort(key=lambda a: a["name"].lower())
+    return apps
+
+
+def updates():
+    out = []
+    rc, text, _ = sh(["dnf", "-q", "--cacheonly", "check-update"], timeout=90)
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 3 and "." in f[0] and not line.startswith(("Obsolet", "Security")):
+            out.append({"source": "rpm", "id": f[0].rsplit(".", 1)[0], "version": f[1], "repo": f[2]})
+    if shutil.which("flatpak"):
+        rc, text, _ = sh(["flatpak", "remote-ls", "--updates", "--columns=application,version,origin"], timeout=90)
+        for line in text.splitlines():
+            f = line.split("\t")
+            if f and f[0]:
+                out.append({"source": "flatpak", "id": f[0], "version": f[1] if len(f) > 1 else "", "repo": f[2] if len(f) > 2 else ""})
+    return out
+
+
+def search(q):
+    res = []
+    if shutil.which("flatpak"):
+        rc, text, _ = sh(["flatpak", "search", "--columns=name,description,application,version,remotes", q], timeout=60)
+        for line in text.splitlines():
+            f = line.split("\t")
+            if len(f) >= 3 and "." in f[2] and not re.search(r"\.(Gtk3theme|Platform|Sdk|KStyle|PlatformTheme)\b", f[2]):
+                res.append({"source": "flatpak", "id": f[2], "name": f[0], "comment": f[1], "version": f[3] if len(f) > 3 else "",
+                            "note": "Flathub · beží v izolácii (sandbox), inštaluje sa bez hesla"})
+    rc, text, _ = sh(["dnf", "-q", "--cacheonly", "repoquery", "--qf", "%{name}\t%{summary}\t%{version}\n", "--latest-limit=1", "*" + q + "*"], timeout=60)
+    for line in text.splitlines()[:15]:
+        f = line.split("\t")
+        if len(f) >= 2 and not f[0].endswith(("-devel", "-debuginfo", "-debugsource", "-doc", "-libs")):
+            res.append({"source": "rpm", "id": f[0], "name": f[0], "comment": f[1], "version": f[2] if len(f) > 2 else "",
+                        "note": "Fedora · systémový balík, inštalácia vyžaduje heslo správcu"})
+    return res[:40]
+
+
+def permissions(app):
+    rc, text, _ = sh(["flatpak", "info", "--show-permissions", app])
+    perms, section = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line.strip("[]")
+            continue
+        if "=" in line and section:
+            k, _, v = line.partition("=")
+            perms.setdefault(section, {})[k] = [x for x in v.split(";") if x]
+    ctx = perms.get("Context", {})
+    shared = ctx.get("shared", [])
+    rc2, over, _ = sh(["flatpak", "override", "--user", "--show", app])
+    net_off = bool(re.search(r"^shared=.*!network", over, re.M))
+    return {"app": app, "network": "network" in shared and not net_off, "raw": perms,
+            "summary": [
+                ["Internet", "áno" if ("network" in shared and not net_off) else "nie"],
+                ["Súbory", ", ".join(ctx.get("filesystems", [])) or "iba vlastné"],
+                ["Zariadenia", ", ".join(ctx.get("devices", [])) or "žiadne"],
+                ["Okná a zvuk", ", ".join(ctx.get("sockets", [])) or "—"],
+            ]}
+
+
+# Setup Plan (vzor Flatseal): oprávnenie → (skupina, popis, riziko 0 nízke / 1 stredné / 2 vysoké, povinné)
+PLAN_SHARED = {"network": ("Internet", "Prístup na internet a do miestnej siete", 1)}
+PLAN_SOCKETS = {
+    "wayland": ("Okná", "Zobrazovať okná (Wayland)", 0, True), "x11": ("Okná", "Zobrazovať okná (X11, staršie)", 1, True),
+    "fallback-x11": ("Okná", "Okná cez X11, ak chýba Wayland", 0, True),
+    "pulseaudio": ("Zvuk", "Prehrávať zvuk a nahrávať z mikrofónu", 1, False),
+    "cups": ("Zariadenia", "Tlačiť", 0, False), "pcsc": ("Zariadenia", "Čipové karty (občiansky preukaz)", 1, False),
+    "ssh-auth": ("Tajomstvá", "Používať tvoje SSH kľúče", 2, False), "gpg-agent": ("Tajomstvá", "Používať tvoje GPG kľúče", 2, False),
+    "session-bus": ("Systém", "Celá zbernica relácie — ovládať ostatné aplikácie", 2, False),
+    "system-bus": ("Systém", "Celá systémová zbernica", 2, False),
+}
+PLAN_DEVICES = {
+    "dri": ("Zariadenia", "Grafická karta (zrýchlené vykresľovanie)", 0), "all": ("Zariadenia", "Všetky zariadenia — kamera, USB, ovládače", 2),
+    "input": ("Zariadenia", "Herné ovládače a vstupné zariadenia", 1), "usb": ("Zariadenia", "Zariadenia USB", 1),
+    "kvm": ("Systém", "Virtualizácia (KVM)", 1), "shm": ("Systém", "Zdieľaná pamäť", 0),
+}
+PLAN_FS = {"host": ("Celý počítač vrátane systému", 2), "host-os": ("Systémové súbory", 2), "host-etc": ("Nastavenia systému (/etc)", 2),
+           "home": ("Celý tvoj domovský priečinok", 2), "xdg-download": ("Stiahnuté", 1), "xdg-documents": ("Dokumenty", 1),
+           "xdg-pictures": ("Obrázky", 1), "xdg-music": ("Hudba", 1), "xdg-videos": ("Videá", 1), "xdg-desktop": ("Plocha", 1),
+           "/media": ("Vymeniteľné disky (/media)", 1), "/run/media": ("Vymeniteľné disky", 1), "/mnt": ("Pripojené disky (/mnt)", 1)}
+PLAN_TALK = {"org.freedesktop.Flatpak": ("Systém", "Spúšťať príkazy mimo sandboxu", 2),
+             "org.freedesktop.secrets": ("Tajomstvá", "Heslá v kľúčenke", 1),
+             "org.freedesktop.Notifications": ("Systém", "Posielať oznámenia", 0),
+             "org.kde.StatusNotifierWatcher": ("Systém", "Ikona na pozadí (tray)", 0),
+             "org.freedesktop.ScreenSaver": ("Systém", "Brániť šetriču obrazovky", 0),
+             "org.mpris.MediaPlayer2.*": ("Systém", "Ovládanie prehrávania médií", 0),
+             "org.gtk.vfs.*": ("Súbory", "Sieťové a vymeniteľné disky (gvfs)", 0),
+             "com.canonical.AppMenu.Registrar": ("Systém", "Menu aplikácie v paneli", 0),
+             "com.canonical.indicator.application": ("Systém", "Ikona na pozadí (tray)", 0),
+             "com.canonical.Unity": ("Systém", "Odznaky a priebeh na ikone", 0),
+             "org.freedesktop.FileManager1": ("Súbory", "Ukázať súbor v Súboroch", 0),
+             "org.a11y.Bus": ("Systém", "Prístupnosť (čítačka obrazovky)", 0)}
+PLANS_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or HOME + "/.config", "latteos", "plany")
+
+
+def ini(text):
+    out, section = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif "=" in line and section:
+            k, _, v = line.partition("=")
+            out.setdefault(section, {})[k] = v
+    return out
+
+
+# natívne aplikácie (RPM, miestne): plán píše LatteOS, izoluje latte-sandbox (bubblewrap)
+NATIVE_ITEMS = [
+    {"key": "shared:network", "group": "Internet", "label": "Prístup na internet a do miestnej siete", "risk": 1},
+    {"key": "fs:home", "group": "Súbory", "label": "Celý tvoj domovský priečinok (inak dostane súkromný)", "risk": 2},
+    {"key": "fs:xdg-download", "group": "Súbory", "label": "Stiahnuté (pri súkromnom domove)", "risk": 1},
+    {"key": "socket:pulseaudio", "group": "Zvuk", "label": "Prehrávať zvuk a nahrávať z mikrofónu", "risk": 1},
+    {"key": "device:camera", "group": "Zariadenia", "label": "Kamera, USB a ostatné zariadenia", "risk": 2},
+    {"key": "device:dri", "group": "Zariadenia", "label": "Grafická karta (zrýchlené vykresľovanie)", "risk": 0},
+    {"key": "talk:session-bus", "group": "Systém", "label": "Celá zbernica relácie — vidieť a ovládať iné aplikácie (inak iba portály, oznámenia, tray)", "risk": 1},
+    {"key": "socket:wayland", "group": "Okná", "label": "Zobrazovať okná", "risk": 0, "required": True},
+]
+NATIVE_UNTRUSTED = ["shared:network", "fs:home", "socket:pulseaudio", "device:camera", "talk:session-bus"]
+SANDBOX_MARK = "X-LatteOS-Sandbox=on"
+NET_MARK = "X-LatteOS-NET=off"
+
+
+def native_desktop(app):
+    """Pôvodný .desktop natívnej aplikácie (nie naše prekrytie v ~/.local/share/applications)."""
+    for d in ("/usr/share/applications", "/usr/local/share/applications", HOME + "/.local/share/applications"):
+        p = os.path.join(d, app + ".desktop")
+        if os.path.exists(p):
+            try:
+                txt = open(p, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if SANDBOX_MARK in txt or NET_MARK in txt:
+                continue
+            return p
+    return None
+
+
+def load_saved(app):
+    try:
+        with open(os.path.join(PLANS_DIR, app + ".json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def native_plan(app):
+    saved = load_saved(app)
+    denied = set(saved.get("denied", []))
+    try:                                                  # staré prekrytie tlačidla NET (latte-net exec)
+        if NET_MARK in open(os.path.join(HOME, ".local/share/applications", app + ".desktop"), encoding="utf-8").read():
+            denied.add("shared:network")
+    except OSError:
+        pass
+    items = [dict(i, allowed=i["key"] not in denied) for i in NATIVE_ITEMS]
+    return {"app": app, "installed": True, "native": True, "runtime": "", "runtimeInstalled": True, "size": "",
+            "profile": saved.get("profile", ""), "items": items, "untrusted": list(NATIVE_UNTRUSTED)}
+
+
+def native_apply(app, denied):
+    """Prekrytie .desktop: Exec cez latte-sandbox run APP -- …; bez zamietnutí sa prekrytie zmaže."""
+    user = os.path.join(HOME, ".local/share/applications", app + ".desktop")
+    src = native_desktop(app)
+    if not src:
+        print("natívna aplikácia sa nenašla: " + app, file=sys.stderr)
+        return 1
+    real = [d for d in denied if d != "socket:wayland"]
+    if not real:
+        try:
+            txt = open(user, encoding="utf-8").read()
+            if SANDBOX_MARK in txt or NET_MARK in txt:   # zmazať iba naše prekrytie
+                os.remove(user)
+        except OSError:
+            pass
+    else:
+        out = []
+        for line in open(src, encoding="utf-8", errors="replace"):
+            m = re.match(r"^(TryExec|Exec)=(.*)$", line.rstrip("\n"))
+            if m and m.group(1) == "TryExec":
+                continue
+            if m:
+                line = "Exec=latte-sandbox run " + app + " -- " + m.group(2) + "\n"
+            out.append(line)
+            if line.strip() == "[Desktop Entry]":
+                out.append(SANDBOX_MARK + "\n")
+                if "shared:network" in real:
+                    out.append(NET_MARK + "\n")
+        os.makedirs(os.path.dirname(user), exist_ok=True)
+        with open(user, "w", encoding="utf-8") as f:
+            f.writelines(out)
+    subprocess.call(["update-desktop-database", os.path.dirname(user)], stderr=subprocess.DEVNULL)
+    return 0
+
+
+def plan(app):
+    rc, text, _ = sh(["flatpak", "info", "-m", app])
+    installed_ = rc == 0
+    if not installed_ and native_desktop(app):
+        return native_plan(app)
+    if not installed_:
+        rc, text, err = sh(["flatpak", "remote-info", "--user", "-m", "flathub", app], timeout=60)
+        if rc != 0:
+            return {"app": app, "error": (err or "aplikácia sa nenašla na Flathube").strip()}
+    meta = ini(text)
+    ctx = meta.get("Context", {})
+    lst = lambda k: [x for x in ctx.get(k, "").split(";") if x]
+    items = []
+    for x in lst("shared"):
+        if x in PLAN_SHARED:
+            g, d, r = PLAN_SHARED[x]
+            items.append({"key": "shared:" + x, "group": g, "label": d, "risk": r})
+    for x in lst("sockets"):
+        g, d, r, req = PLAN_SOCKETS.get(x, ("Systém", "Rozhranie " + x, 1, False))
+        items.append({"key": "socket:" + x, "group": g, "label": d, "risk": r, "required": req})
+    for x in lst("devices"):
+        g, d, r = PLAN_DEVICES.get(x, ("Zariadenia", "Zariadenie " + x, 1))
+        items.append({"key": "device:" + x, "group": g, "label": d, "risk": r})
+    for x in lst("filesystems"):
+        base, _, mode = x.partition(":")
+        if base.startswith("xdg-run/") or base.startswith("xdg-config/") or base.startswith("xdg-data/") or base.startswith("xdg-cache/"):
+            continue                                      # technické (gvfs, nastavenia vlastných súborov)
+        name, r = PLAN_FS.get(base, (base.replace("~", "domov"), 1))
+        ro = mode == "ro"
+        items.append({"key": "fs:" + base, "group": "Súbory", "label": name + (" — iba čítať" if ro else ""), "risk": max(0, r - 1) if ro else r})
+    for sec, kind in (("Session Bus Policy", "talk"), ("System Bus Policy", "system-talk")):
+        for name, pol in meta.get(sec, {}).items():
+            if pol != "talk":
+                continue
+            g, d, r = PLAN_TALK.get(name, ("Systém", "Služba " + name, 1))
+            if kind == "system-talk":
+                r = max(r, 1)
+            items.append({"key": kind + ":" + name, "group": g, "label": d, "risk": r})
+    saved = {}
+    try:
+        with open(os.path.join(PLANS_DIR, app + ".json")) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        pass
+    denied = set(saved.get("denied", []))
+    if installed_:                                        # aktuálne úpravy (tlačidlo NET, Flatseal) majú prednosť
+        ov = ini(sh(["flatpak", "override", "--user", "--show", app])[1])
+        oc = ov.get("Context", {})
+        for k, pre in (("shared", "shared:"), ("sockets", "socket:"), ("devices", "device:"), ("filesystems", "fs:")):
+            for x in oc.get(k, "").split(";"):
+                if x.startswith("!"):
+                    denied.add(pre + x[1:].partition(":")[0])
+                elif x:
+                    denied.discard(pre + x.partition(":")[0])
+        for sec, pre in (("Session Bus Policy", "talk:"), ("System Bus Policy", "system-talk:")):
+            for name, pol in ov.get(sec, {}).items():
+                (denied.add if pol == "none" else denied.discard)(pre + name)
+    for i in items:
+        i["allowed"] = i["key"] not in denied
+    runtime = meta.get("Application", {}).get("runtime", "")
+    size = ""
+    if not installed_:
+        rc, info, _ = sh(["flatpak", "remote-info", "--user", "flathub", app], timeout=60)
+        m = re.search(r"Installed Size:\s*(.+)", info, re.I)
+        d = re.search(r"Download Size:\s*(.+)", info, re.I)
+        size = (m.group(1).strip() + (" (stiahne sa " + d.group(1).strip() + ")" if d else "")) if m else ""
+    has_rt = bool(runtime) and sh(["flatpak", "info", runtime.split("/")[0] + "//" + runtime.split("/")[-1]])[0] == 0
+    return {"app": app, "installed": installed_, "runtime": runtime, "runtimeInstalled": has_rt, "size": size,
+            "profile": saved.get("profile", ""), "items": items,
+            "untrusted": [i["key"] for i in items if i["risk"] >= 1 and not i.get("required")]}
+
+
+def plan_apply(app, denied_json):
+    denied = set(json.loads(denied_json or "[]"))
+    p = plan(app)
+    if p.get("error"):
+        print(p["error"], file=sys.stderr)
+        return 1
+    args = []
+    for i in p["items"]:
+        kind, _, v = i["key"].partition(":")
+        deny = i["key"] in denied and not i.get("required")
+        args += {"shared": ["--unshare=" + v] if deny else ["--share=" + v],
+                 "socket": ["--nosocket=" + v] if deny else ["--socket=" + v],
+                 "device": ["--nodevice=" + v] if deny else ["--device=" + v],
+                 "fs": ["--nofilesystem=" + v] if deny else [],   # povolenie = to, čo si aplikácia žiada (bez prepisu)
+                 "talk": ["--no-talk-name=" + v] if deny else ["--talk-name=" + v],
+                 "system-talk": ["--system-no-talk-name=" + v] if deny else ["--system-talk-name=" + v]}.get(kind, [])
+    if p.get("native"):
+        rc = native_apply(app, denied)
+        if rc != 0:
+            return rc
+    elif p["installed"] and args:
+        rc = subprocess.call(["flatpak", "override", "--user"] + args + [app])
+        if rc != 0:
+            return rc
+    os.makedirs(PLANS_DIR, exist_ok=True)
+    unt = set(p["untrusted"])
+    profile = "trusted" if not denied else ("untrusted" if unt and unt <= denied else "custom")
+    with open(os.path.join(PLANS_DIR, app + ".json"), "w") as f:
+        json.dump({"app": app, "profile": profile, "denied": sorted(denied), "date": __import__("time").strftime("%Y-%m-%d %H:%M")}, f, ensure_ascii=False)
+    return 0
+
+
+SKIP_EXE = re.compile(r"(^|/)(unins\d*|uninstall|vc_?redist[^/]*|dxsetup|dxwebsetup|directx[^/]*|dotnet[^/]*|ndp\d+[^/]*|physx[^/]*|oalinst|"
+                      r"unitycrashhandler\w*|crashreport\w*|ue4prereqsetup\w*|easyanticheat\w*|quicksfv|7z\w*|unrar\w*)\.exe$", re.I)
+INSTALLER = re.compile(r"(^|/)(setup|install|installer|autorun|launcher_setup|setup_[^/]+)\.exe$", re.I)
+
+
+def list_tree(path):
+    """(relatívna cesta, veľkosť) pre zložku alebo archív; None ak sa archív nedá prečítať."""
+    out = []
+    if os.path.isdir(path):
+        base = len(path.rstrip("/")) + 1
+        for root, dirs, files in os.walk(path):
+            if root[base:].count("/") >= 4:
+                dirs[:] = []
+            for f in files:
+                full = os.path.join(root, f)
+                try:
+                    out.append((full[base:], os.path.getsize(full)))
+                except OSError:
+                    pass
+                if len(out) > 20000:
+                    return out
+        return out
+    low = path.lower()
+    if low.endswith(".zip") and shutil.which("unzip"):
+        rc, text, _ = sh(["unzip", "-Zl", path], timeout=60)
+        for l in text.splitlines():
+            f = l.split(None, 9)
+            if len(f) == 10 and f[3].isdigit():
+                out.append((f[9], int(f[3])))
+        return out
+    if shutil.which("7z"):
+        rc, text, _ = sh(["7z", "l", "-slt", path], timeout=60)
+        cur, size = None, 0
+        for l in text.splitlines():
+            if l.startswith("Path = "):
+                cur = l[7:]
+            elif l.startswith("Size = ") and cur:
+                out.append((cur, int(l[7:] or 0))); cur = None
+        return out[1:] if out and out[0][0] == path else out
+    if shutil.which("bsdtar"):
+        rc, text, _ = sh(["bsdtar", "-tvf", path], timeout=60)
+        for l in text.splitlines():
+            f = l.split(None, 8)
+            if len(f) == 9 and f[4].isdigit():
+                out.append((f[8], int(f[4])))
+        return out if rc == 0 else None
+    return None
+
+
+def check_game(path, files, archive):
+    """Zložka / CD / archív s hrou alebo programom: čo to je, čím to spustiť, čo chýba."""
+    name = os.path.basename(path.rstrip("/"))
+    if archive:
+        name = re.sub(r"\.(zip|rar|7z|iso)$", "", name, flags=re.I)
+    v = {"file": path, "name": name, "verdict": "podmienecne", "title": "", "reasons": [], "action": [], "plan": [], "needs": []}
+    orig = {f.lower(): f for f, _ in files}                 # výstup s pôvodnými veľkými písmenami (RA95.exe)
+    lows = [(f.lower(), sz) for f, sz in files]
+    total = sum(sz for _, sz in files)
+    exes = [(f, sz) for f, sz in lows if f.endswith(".exe")]
+    inst = [f for f, _ in exes if INSTALLER.search(f)]
+    autorun = [f for f, _ in lows if f.endswith("autorun.inf")]
+    bins = [f for f, _ in lows if re.search(r"(^|/)(fg|setup|data|dodi)[-_]?\d+[^/]*\.bin$", f) or re.search(r"(^|/)[^/]+-\d+\.bin$", f)]
+    msi = [f for f, _ in lows if f.endswith(".msi")]
+    linux = [f for f, _ in lows if f.endswith((".x86_64", ".x86")) or re.search(r"(^|/)(start|run|launch)[^/]*\.sh$", f)]
+    gog = [f for f, _ in lows if re.search(r"gog[^/]*\.sh$|/gameinfo$", f)]
+    portable = [f for f, sz in sorted(exes, key=lambda x: -x[1]) if not SKIP_EXE.search(f) and not INSTALLER.search(f)]
+    redist = sorted({f.split("/")[0] for f, _ in lows if re.search(r"(^|/)(_?commonredist|redist|directx|vcredist)/", f)})
+    umu = shutil.which("umu-run")
+    wine = shutil.which("wine")
+    runner = "Proton (umu-launcher)" if umu else ("Wine" if wine else "")
+    gb = lambda n: human(n)
+    o = lambda f: orig.get(f, f)
+    free = shutil.disk_usage(os.path.expanduser("~")).free
+    prefix = "~/Hry/" + re.sub(r"[^\w .-]", "", name).strip()
+    if archive:
+        v["plan"].append("Rozbaliť archív do " + prefix + " (" + gb(total) + ")")
+        if not path.lower().endswith(".zip") and not shutil.which("7z") and not shutil.which("bsdtar"):
+            v["needs"].append({"pkg": "7zip", "label": "7-Zip (rar, 7z, iso)"})
+    if linux or gog:
+        v.update(verdict="ano", title="Hra alebo program pre Linux")
+        v["reasons"].append("spúšťač pre Linux: " + o((gog or linux)[0]))
+        v["plan"].append("Spustiť priamo (bez Wine), vytvoriť spúšťač v App Manageri a na ploche")
+    elif inst or msi or autorun:
+        rep = bool(bins)
+        v["title"] = "Inštalátor pre Windows" + (" — repack v častiach (.bin)" if rep else (" z CD/DVD" if autorun else ""))
+        v["reasons"].append("inštalátor: " + o((inst or msi or autorun)[0]) + ((" + " + str(len(bins)) + " častí .bin") if rep else ""))
+        if rep:
+            v["reasons"].append("repacky (napr. FitGirl, DODI) sa rozbaľujú dlho a potrebujú miesto navyše: počítaj ~" + gb(total * 2.5) + " voľného")
+            if any("verify" in f for f, _ in lows):
+                v["plan"].append("Najprv overiť .bin súbory (MD5) — ekvivalent „Verify BIN files“ vo Windows")
+        v["plan"].append("Vytvoriť samostatný sandbox (Wine prefix) " + prefix + "/prefix — hra nevidí zvyšok systému")
+        v["plan"].append("Spustiť " + o((inst or msi or autorun)[0]).split("/")[-1] + " cez " + (runner or "Proton/Wine") + ", cieľ inštalácie C:\\Games v sandboxe")
+        v["plan"].append("Po inštalácii nájsť hlavné .exe a vytvoriť spúšťač (App Manager, plocha)")
+    elif portable:
+        v["title"] = "Prenosná hra / program pre Windows (bez inštalácie)"
+        v["reasons"].append("hlavný program: " + o(portable[0]) + " (" + gb(dict(lows)[portable[0]]) + ")")
+        v["plan"].append("Vytvoriť sandbox " + prefix + "/prefix a spúšťať " + o(portable[0]).split("/")[-1] + " cez " + (runner or "Proton/Wine"))
+        v["plan"].append("Vytvoriť spúšťač v App Manageri a na ploche")
+        if len(portable) > 1:
+            v["reasons"].append("ďalšie .exe: " + ", ".join(o(p).split("/")[-1] for p in portable[1:4]))
+    else:
+        v.update(verdict="nie", title="Nenašiel som program ani inštalátor",
+                 reasons=["v " + ("archíve" if archive else "zložke") + " nie je .exe, .msi, autorun.inf ani spúšťač pre Linux"])
+        return v
+    if redist:
+        v["reasons"].append("doplnkové knižnice (" + ", ".join(redist) + ") Proton zvyčajne nepotrebuje — preskočia sa")
+    if not (linux or gog):
+        if not runner:
+            # umu-launcher (Proton mimo Steamu) vo Fedore nie je — príde zo zdroja LatteOS (resources/upstream/umu-launcher);
+            # dovtedy Wine z Fedory
+            v["needs"].append({"pkg": "wine", "label": "Wine z Fedory"})
+            v["reasons"].append("chýba Wine/Proton — zatiaľ Wine z Fedory; Proton cez umu-launcher príde s hernou vrstvou LatteOS")
+        else:
+            v["reasons"].append("spustí sa cez " + runner)
+        v["reasons"].append("anti-cheat (EasyAntiCheat, BattlEye) môže online hru zablokovať — offline hry zvyčajne fungujú")
+    v["reasons"].append("veľkosť " + gb(total) + " · voľné miesto " + gb(free) + (" ✓" if free > total * (2.5 if bins else 1.3) else " ✗ málo miesta"))
+    if free < total * (2.5 if bins else 1.3):
+        v["verdict"] = "nie"
+    return v
+
+
+def check(path):
+    """Bude to fungovať? Jednoduchý verdikt podľa typu súboru a toho, čo je v systéme."""
+    name = os.path.basename(path)
+    low = name.lower()
+    v = {"file": path, "name": name, "verdict": "nie", "title": "", "reasons": [], "action": []}   # action = argv (nikdy reťazec pre shell)
+    if not os.path.exists(path):
+        v.update(title="Súbor neexistuje", reasons=[path])
+        return v
+    if os.path.isdir(path) or low.endswith((".zip", ".rar", ".7z", ".iso")):
+        files = list_tree(path)
+        if files is None:
+            v.update(verdict="podmienecne", title="Archív " + low.rsplit(".", 1)[-1].upper(),
+                     reasons=["archív sa zatiaľ nedá prečítať — chýba 7-Zip"], needs=[{"pkg": "7zip", "label": "7-Zip (rar, 7z, iso)"}], plan=[])
+            return v
+        return check_game(path, files, not os.path.isdir(path))
+    if low.endswith((".flatpakref", ".flatpak")):
+        ok = bool(shutil.which("flatpak"))
+        v.update(verdict="ano" if ok else "nie", title="Flatpak aplikácia" if ok else "Chýba Flatpak",
+                 reasons=["beží izolovane (sandbox) na každej Fedore", "inštalácia pre tvoj účet bez hesla"],
+                 action=["flatpak", "install", "--user", "-y", path])
+    elif low.endswith(".rpm"):
+        rc, arch, _ = sh(["rpm", "-qp", "--qf", "%{ARCH}", path])
+        machine = os.uname().machine
+        reasons = ["architektúra " + (arch or "?") + (" ✓" if arch in (machine, "noarch") else " ✗ (tento PC je " + machine + ")")]
+        rc2, out, err = sh(["dnf", "-q", "--cacheonly", "install", "--assumeno", path], timeout=90)
+        problem = re.search(r"(Problem|Error|Chyba|conflict|nothing provides)", out + err, re.I)
+        reasons.append("problém so závislosťami: " + problem.string[problem.start():].strip().splitlines()[0][:160] if problem else "závislosti sa dajú splniť")
+        good = arch in (machine, "noarch") and not problem
+        v.update(verdict="ano" if good else "nie", title="RPM balík pre Fedoru" if good else "RPM sa nedá nainštalovať",
+                 reasons=reasons + ["inštaluje sa do systému (heslo správcu), nie je izolovaný"], action=["latte-app", "instalator", "install", path])
+    elif low.endswith(".appimage"):
+        fuse2 = sh(["rpm", "-q", "fuse-libs"])[0] == 0
+        v.update(verdict="ano" if fuse2 else "podmienecne", title="AppImage",
+                 reasons=["prenosný program, netreba inštalovať", "FUSE 2 " + ("je nainštalovaný ✓" if fuse2 else "chýba — väčšina AppImage ho potrebuje (sudo dnf install fuse-libs)"),
+                          "beží bez izolácie"], action=["chmod", "+x", path])
+    elif low.endswith((".exe", ".msi")):
+        has = shutil.which("umu-run") or shutil.which("wine")
+        v.update(verdict="podmienecne" if has else "nie", title="Windows program",
+                 reasons=["spúšťa sa cez Proton/Wine (F8 herná vrstva)", ("umu-launcher/Wine je nainštalovaný" if has else "umu-launcher ani Wine zatiaľ nie sú nainštalované"),
+                          "hry z obchodov (Steam, GOG, Epic) fungujú cez ich launcher; kontrola proti ProtonDB príde neskôr"],
+                 action=["umu-run", path] if has else [])
+    elif low.endswith(".apk"):
+        has = shutil.which("waydroid")
+        v.update(verdict="podmienecne" if has else "nie", title="Android aplikácia",
+                 reasons=["Android aplikácie bežia cez Waydroid (potrebuje reálny HW, nie VM)", "Waydroid " + ("je nainštalovaný" if has else "zatiaľ nie je nainštalovaný")],
+                 action=["waydroid", "app", "install", path] if has else [])
+    elif low.endswith(".deb"):
+        v.update(verdict="nie", title="Balík pre Debian/Ubuntu",
+                 reasons=[".deb je pre iný systém; hľadaj rovnakú aplikáciu na Flathube alebo ako .rpm", "App Manager ju skúsi nájsť podľa názvu"],
+                 action=[])
+    elif low.endswith((".sh", ".run")):
+        v.update(verdict="podmienecne", title="Inštalačný skript",
+                 reasons=["môže zmeniť čokoľvek v systéme — spusti iba zo zdroja, ktorému veríš", "najprv si ho prečítaj (Súbory › Otvoriť v editore)"], action=[])
+    else:
+        v.update(title="Neznámy typ súboru", reasons=["App Manager pozná .flatpakref, .rpm, .AppImage, .exe, .apk, .deb"])
+    return v
+
+
+# ── obchod: Flathub API v2 ───────────────────────────────────────────────────
+FLATHUB = "https://flathub.org/api/v2"
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "flathub")
+
+
+def fh(path, ttl=6 * 3600, post=None):
+    import hashlib, time, urllib.request
+    os.makedirs(CACHE, exist_ok=True)
+    key = hashlib.md5((path + json.dumps(post or "")).encode()).hexdigest()
+    f = os.path.join(CACHE, key + ".json")
+    if os.path.exists(f) and time.time() - os.path.getmtime(f) < ttl:
+        try:
+            return json.load(open(f))
+        except ValueError:
+            pass
+    try:
+        req = urllib.request.Request(FLATHUB + path, data=json.dumps(post).encode() if post is not None else None,
+                                     headers={"Content-Type": "application/json", "User-Agent": "LatteOS-AppManager/0.1"})
+        data = json.load(urllib.request.urlopen(req, timeout=15))
+        json.dump(data, open(f, "w"))
+        return data
+    except Exception:
+        if os.path.exists(f):                 # bez internetu: posledná známa ponuka
+            return json.load(open(f))
+        return None
+
+
+def flatpak_installed():
+    rc, text, _ = sh(["flatpak", "list", "--app", "--columns=application"], timeout=20)
+    return set(l.strip() for l in text.splitlines() if l.strip())
+
+
+def card(h, inst):
+    aid = h.get("app_id") or h.get("id", "").replace("_", ".")
+    return {"id": aid, "name": h.get("name", aid), "summary": h.get("summary", ""), "icon": h.get("icon") or "",
+            "developer": h.get("developer_name") or "", "verified": bool(h.get("verification_verified")),
+            "installs": h.get("installs_last_month") or 0, "category": h.get("main_categories") or "",
+            "free": h.get("is_free_license", True), "installed": aid in inst}
+
+
+def store(a):
+    inst = flatpak_installed()
+    if a[0] == "home":
+        out = {}
+        for key, path in (("trendy", "/collection/trending"), ("oblubene", "/collection/popular"),
+                          ("nove", "/collection/recently-added"), ("aktualizovane", "/collection/recently-updated")):
+            d = fh(path + "?page=1&per_page=16") or {}
+            out[key] = [card(h, inst) for h in d.get("hits", []) if h.get("type", "desktop-application") == "desktop-application"]
+        # úvodný banner: prvá trendová aplikácia so snímkou obrazovky
+        for c in out.get("trendy", [])[:6]:
+            det = fh("/appstream/" + c["id"], ttl=24 * 3600) or {}
+            shot = shots(det)
+            if shot:
+                out["banner"] = dict(c, screenshot=shot[0], description=plain(det.get("description", ""))[:260])
+                break
+        return out
+    if a[0] == "category" and len(a) > 1:
+        page = a[2] if len(a) > 2 else "1"
+        d = fh("/collection/category/%s?page=%s&per_page=48" % (a[1], page)) or {}
+        return {"apps": [card(h, inst) for h in d.get("hits", [])], "pages": d.get("totalPages", 1)}
+    if a[0] == "search" and len(a) > 1:
+        q = " ".join(a[1:])
+        d = fh("/search", ttl=3600, post={"query": q}) or {}
+        apps = [card(h, inst) for h in d.get("hits", [])[:40] if h.get("type", "desktop-application") in ("desktop-application", "console-application")]
+        rpm = [x for x in search(q) if x["source"] == "rpm"][:8] if a[0] == "search" else []
+        return {"apps": apps, "rpm": rpm}
+    if a[0] == "app" and len(a) > 1:
+        aid = a[1]
+        det = fh("/appstream/" + aid, ttl=24 * 3600) or {}
+        summ = fh("/summary/" + aid, ttl=24 * 3600) or {}
+        stats = fh("/stats/" + aid, ttl=24 * 3600) or {}
+        ver = fh("/verification/%s/status" % aid, ttl=24 * 3600) or {}
+        rel = [{"version": r.get("version", ""), "date": r.get("timestamp", ""), "text": plain(r.get("description") or "")[:400]}
+               for r in (det.get("releases") or [])[:4]]
+        urls = det.get("urls") or {}
+        return {"id": aid, "name": det.get("name", aid), "summary": det.get("summary", ""), "developer": det.get("developer_name", ""),
+                "description": plain(det.get("description", "")), "icon": det.get("icon") or "", "screenshots": shots(det),
+                "license": det.get("project_license", ""), "free": det.get("is_free_license", True),
+                "downloadSize": summ.get("download_size") or 0, "installedSize": summ.get("installed_size") or 0,
+                "installsTotal": stats.get("installs_total") or 0, "verified": bool(ver.get("verified")),
+                "verifiedBy": ver.get("website") or ver.get("login_name") or "", "releases": rel,
+                "homepage": urls.get("homepage", ""), "help": urls.get("help", ""), "categories": det.get("categories") or [],
+                "installed": aid in inst}
+    return None
+
+
+def shots(det):
+    out = []
+    for sc in det.get("screenshots") or []:
+        sizes = sc.get("sizes") or []
+        best = None
+        for z in sizes:                        # snímka ~752 px široká (rýchla, ostrá v okne)
+            w = int(z.get("width") or 0)
+            if 600 <= w <= 1300 and (best is None or abs(w - 900) < abs(int(best["width"]) - 900)):
+                best = z
+        if best or sizes:
+            out.append((best or sizes[0])["src"])
+    return out[:6]
+
+
+def plain(html):
+    t = re.sub(r"\s*\n\s*", " ", html or "")            # zalomenia v zdrojovom XML nie sú odseky
+    t = re.sub(r"<li>\s*", "\n• ", t)
+    t = re.sub(r"</p>\s*", "\n\n", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    return re.sub(r"\n\s*\n\s*\n+", "\n\n", t).strip()
+
+
+# ── súčasti LatteOS: nainštalovaná verzia vs. repozitár ──────────────────────
+def latteos():
+    info = {}
+    for line in open("/usr/share/latteos/VERSION").read().splitlines() if os.path.exists("/usr/share/latteos/VERSION") else []:
+        k, _, v = line.partition("=")
+        info[k.strip()] = v.strip()
+    src = info.get("source", "")
+    out = {"installed": info.get("commit", ""), "date": info.get("date", ""), "branch": info.get("branch", ""), "source": src,
+           "behind": 0, "log": [], "error": ""}
+    if not src or not os.path.isdir(os.path.join(src, ".git")):
+        out["error"] = "Súčasti LatteOS neboli nainštalované z repozitára (chýba /usr/share/latteos/VERSION)."
+        return out
+    rc, _, err = sh(["git", "-C", src, "fetch", "-q", "origin", out["branch"] or "HEAD"], timeout=30)
+    if rc != 0:
+        out["error"] = "Repozitár sa nepodarilo overiť: " + (err.strip().splitlines() or ["bez spojenia"])[-1][:160]
+    # novšie ako nainštalované: z GitHubu (origin/vetva) alebo lokálne v repozitári (vývoj) — čo je ďalej
+    text = ""
+    for ref in (("origin/" + out["branch"]) if out["branch"] else "FETCH_HEAD", "HEAD"):
+        rc, t, _ = sh(["git", "-C", src, "log", "--format=%h\t%cs\t%s", out["installed"] + ".." + ref], timeout=20)
+        if rc == 0 and len(t.splitlines()) > len(text.splitlines()):
+            text = t
+    out["log"] = [dict(zip(("commit", "date", "subject"), l.split("\t", 2))) for l in text.splitlines()][:30]
+    out["behind"] = len(text.splitlines())
+    rc, text, _ = sh(["git", "-C", src, "log", "--format=%h\t%cs\t%s", "-n", "8", out["installed"]], timeout=20)
+    out["recent"] = [dict(zip(("commit", "date", "subject"), l.split("\t", 2))) for l in text.splitlines()]
+    return out
+
+
+# ── ovládače a firmvér (Správca zariadení) ───────────────────────────────────
+def drivers():
+    out = {"firmware": [], "gpu": [], "notes": [], "fwupd": bool(shutil.which("fwupdmgr"))}
+    if out["fwupd"]:
+        rc, text, _ = sh(["fwupdmgr", "get-updates", "--json"], timeout=40)
+        try:
+            for d in json.loads(text).get("Devices", []):
+                rel = (d.get("Releases") or [{}])[0]
+                out["firmware"].append({"device": d.get("Name", ""), "vendor": d.get("Vendor", ""), "current": d.get("Version", ""),
+                                        "new": rel.get("Version", ""), "summary": rel.get("Summary", ""), "id": d.get("DeviceId", "")})
+        except ValueError:
+            pass
+    rc, text, _ = sh(["lspci", "-nnk"], timeout=10)
+    blocks = re.split(r"\n(?=\S)", text)
+    for b in blocks:
+        if re.search(r"VGA|3D controller|Display controller", b):
+            name = b.splitlines()[0].split(": ", 1)[-1]
+            m = re.search(r"Kernel driver in use: (\S+)", b)
+            drv = m.group(1) if m else ""
+            g = {"name": name, "driver": drv, "status": "ok", "advice": ""}
+            if "NVIDIA" in name:
+                rc2, _, _ = sh(["rpm", "-q", "akmod-nvidia"], timeout=10)
+                if drv != "nvidia":
+                    g.update(status="odporucane", advice="Pre hry nainštaluj ovládač NVIDIA (akmod-nvidia z RPM Fusion) — namiesto nouveau.",
+                             package="akmod-nvidia")
+            elif re.search(r"AMD|ATI", name):
+                g["advice"] = "AMD: ovládač amdgpu je súčasťou jadra, aktualizuje sa so systémom (Mesa)."
+            elif "Intel" in name:
+                g["advice"] = "Intel: ovládač i915/xe je súčasťou jadra, aktualizuje sa so systémom (Mesa)."
+            elif re.search(r"VMware|VirtualBox|QXL|Virtio", name):
+                g["advice"] = "Virtuálny počítač: ovládač poskytuje hypervízor, nič netreba inštalovať."
+            out["gpu"].append(g)
+    if not out["fwupd"]:
+        out["notes"].append("Firmvér (BIOS, SSD, dokovacie stanice) aktualizuje fwupd — nie je nainštalovaný.")
+    # spolupráca so Správcom zariadení: zariadenia, ktorým chýba ovládač, firmvér alebo balík
+    try:
+        inv = json.loads(subprocess.run(["latte-devices", "list"], capture_output=True, text=True, timeout=20).stdout)
+        out["devices"] = inv.get("faults", [])
+    except Exception:
+        out["devices"] = []
+    return out
+
+
+def main(a):
+    if not a:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cmd = a[0]
+    if cmd == "installed":
+        print(json.dumps(installed(), ensure_ascii=False))
+    elif cmd == "defaults":
+        print(json.dumps(defaults(), ensure_ascii=False))
+    elif cmd == "default" and len(a) == 3:
+        return set_default(a[1], a[2])
+    elif cmd == "updates":
+        print(json.dumps(updates(), ensure_ascii=False))
+    elif cmd == "search" and len(a) > 1:
+        print(json.dumps(search(" ".join(a[1:])), ensure_ascii=False))
+    elif cmd == "permissions" and len(a) == 2:
+        print(json.dumps(permissions(a[1]), ensure_ascii=False))
+    elif cmd == "plan" and len(a) == 2:
+        print(json.dumps(plan(a[1]), ensure_ascii=False))
+    elif cmd == "plan-apply" and len(a) == 3:
+        return plan_apply(a[1], a[2])
+    elif cmd == "net" and len(a) == 3:
+        return subprocess.call(["latte-net", "on" if a[2] == "on" else "off", a[1]])   # Flatpak aj natívne (bubblewrap)
+    elif cmd == "store" and len(a) > 1:
+        print(json.dumps(store(a[1:]), ensure_ascii=False))
+    elif cmd == "latteos":
+        print(json.dumps(latteos(), ensure_ascii=False))
+    elif cmd == "drivers":
+        print(json.dumps(drivers(), ensure_ascii=False))
+    elif cmd == "check" and len(a) == 2:
+        print(json.dumps(check(a[1]), ensure_ascii=False))
+    elif cmd in ("install", "remove") and len(a) == 3 and a[1] == "flatpak":
+        argv = ["flatpak", "install", "--user", "-y", "--noninteractive", "flathub", a[2]] if cmd == "install" else ["flatpak", "uninstall", "--user", "-y", "--noninteractive", a[2]]
+        return subprocess.call(argv)
+    else:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

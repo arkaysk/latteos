@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# latte-backup — zálohy domovského priečinka LatteOS (Nastavenia › Dáta › Zálohovanie a obnova).
+# Snímky cez rsync --link-dest: každá záloha vyzerá ako celá kópia, nezmenené súbory sú pevné odkazy
+# (zaberajú miesto raz). Cieľ: USB disk alebo priečinok; bez práv správcu.
+#
+#   latte-backup status            stav ako key=value (cieľ, posledná záloha, počet snímok, voľné miesto)
+#   latte-backup set-target CESTA  kam zálohovať (vytvorí CESTA/LatteOS-zaloha-<meno>)
+#   latte-backup run               zálohuj teraz (priebeh: riadky "pct=N")
+#   latte-backup list              snímky (najnovšia prvá)
+#   latte-backup schedule on|off   denná záloha cez systemd --user časovač
+#   latte-backup prune N           ponechaj N najnovších snímok (predvolene 14)
+set -u
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/latteos"
+conf="$cfg/backup.conf"
+target=""; keep=14
+[ -r "$conf" ] && . "$conf"
+dest() { printf '%s/LatteOS-zaloha-%s' "$target" "$(id -un)"; }
+need_target() { [ -n "$target" ] && [ -d "$target" ] || { echo "error=Cieľ zálohy nie je nastavený alebo nie je pripojený ($target)"; exit 3; }; }
+
+# čo sa nezálohuje: vyrovnávacie pamäte, kôš, veľké herné a virtuálne obrazy (dajú sa stiahnuť znova)
+EXCLUDES=(--exclude=.cache/ --exclude=.local/share/Trash/ --exclude=.local/share/Steam/ --exclude=.var/app/*/cache/
+          --exclude=.local/share/flatpak/ --exclude=.local/share/containers/ --exclude=Stiahnuté/*.iso --exclude=.ollama/ --exclude=rpmbuild/)
+
+case "${1:-status}" in
+status)
+    echo "target=$target"
+    echo "keep=$keep"
+    if [ -n "$target" ] && [ -d "$(dest)" ]; then
+        last="$(ls -1 "$(dest)" 2>/dev/null | grep -E '^[0-9]{4}-' | sort | tail -1)"
+        echo "last=$last"
+        echo "count=$(ls -1 "$(dest)" | grep -cE '^[0-9]{4}-')"
+        echo "free=$(df -h --output=avail "$target" | tail -1 | tr -d ' ')"
+    else
+        echo "last="; echo "count=0"
+        [ -n "$target" ] && [ -d "$target" ] && echo "free=$(df -h --output=avail "$target" | tail -1 | tr -d ' ')"
+    fi
+    systemctl --user is-enabled -q latte-backup.timer 2>/dev/null && echo "schedule=on" || echo "schedule=off"
+    # pripojené disky (kandidáti na cieľ)
+    for m in /run/media/"$(id -un)"/*; do [ -d "$m" ] && echo "drive=$m|$(df -h --output=avail "$m" | tail -1 | tr -d ' ')"; done ;;
+set-target)
+    t="${2:?cesta}"; [ -d "$t" ] || { echo "error=Priečinok neexistuje: $t"; exit 2; }
+    mkdir -p "$cfg"; printf 'target=%q\nkeep=%q\n' "$t" "$keep" > "$conf"
+    echo "target=$t" ;;
+run)
+    need_target
+    d="$(dest)"; mkdir -p "$d"
+    now="$(date +%Y-%m-%d_%H%M%S)"
+    prev="$(ls -1 "$d" | grep -E '^[0-9]{4}-' | sort | tail -1)"
+    link=(); [ -n "$prev" ] && link=(--link-dest="$d/$prev")
+    rsync -a --delete --info=progress2 --no-inc-recursive "${EXCLUDES[@]}" "${link[@]}" "$HOME/" "$d/.$now.partial/" \
+        | stdbuf -o0 tr '\r' '\n' | stdbuf -o0 sed -n 's/.* \([0-9]\+\)% .*/pct=\1/p'
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 24 ]; then          # 24 = niektoré súbory počas zálohy zmizli (bežné)
+        mv "$d/.$now.partial" "$d/$now"
+        echo "done=$now"
+        "$0" prune "$keep" >/dev/null
+        notify-send -a LatteOS "Záloha hotová" "$now → $target" 2>/dev/null
+    else
+        echo "error=rsync skončil s kódom $rc (neúplná záloha ostala v .$now.partial)"; exit "$rc"
+    fi ;;
+list)
+    need_target; ls -1 "$(dest)" | grep -E '^[0-9]{4}-' | sort -r ;;
+prune)
+    need_target; n="${2:-$keep}"
+    ls -1 "$(dest)" | grep -E '^[0-9]{4}-' | sort -r | tail -n +"$((n + 1))" | while read -r old; do rm -rf -- "$(dest)/$old"; done ;;
+schedule)
+    u="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; mkdir -p "$u"
+    if [ "${2:-}" = on ]; then
+        printf '[Unit]\nDescription=LatteOS záloha domova\n\n[Service]\nType=oneshot\nExecStart=%s run\nNice=10\nIOSchedulingClass=idle\n' "$(command -v latte-backup)" > "$u/latte-backup.service"
+        printf '[Unit]\nDescription=LatteOS denná záloha\n\n[Timer]\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=15min\n\n[Install]\nWantedBy=timers.target\n' > "$u/latte-backup.timer"
+        systemctl --user daemon-reload && systemctl --user enable --now latte-backup.timer && echo "schedule=on"
+    else
+        systemctl --user disable --now latte-backup.timer 2>/dev/null; echo "schedule=off"
+    fi ;;
+*)
+    sed -n '2,12p' "$0"; exit 2 ;;
+esac

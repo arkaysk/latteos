@@ -1,0 +1,4 @@
+# LatteOS SAFE — spúšťa labwc po štarte
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP LATTE_MODE >/dev/null 2>&1 &
+noctalia >/dev/null 2>&1 &
+foot -T "LatteOS SAFE" -e latte-safe >/dev/null 2>&1 &

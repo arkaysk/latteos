@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Mráz
+desc = Ľad · kresby rastú pri nečinnosti · para nad šálkou topí mráz
+mode = light
+palette = LatteMraz
+material = mraz
+effects = plne
+border_active = 3B8FC4
+border_inactive = A9C9DE
+wallpaper = 

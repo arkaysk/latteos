@@ -1,0 +1,22 @@
+#!/bin/sh
+# latte-nahravanie [prepni|oblast|stop] — nahrávanie obrazovky ako Xbox Game Bar (Win+Alt+R) a Výstrižky (oblasť).
+# wf-recorder (MIT) kóduje na CPU, takže beží aj vo VM bez GPU. Druhé stlačenie nahrávanie ukončí.
+# Súbor: ~/Videá/Nahrávky obrazovky/Nahrávka RRRR-MM-DD HHMMSS.mp4, potom oznámenie s Otvoriť / Otvoriť priečinok.
+pidf="${XDG_RUNTIME_DIR:-/tmp}/latte-nahravanie.pid"
+if [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
+    kill -INT "$(cat "$pidf")"; exit 0          # stop: wf-recorder súbor dokončí sám
+fi
+[ "${1:-prepni}" = "stop" ] && exit 0
+dir="$(xdg-user-dir VIDEOS 2>/dev/null || echo "$HOME/Videá")/Nahrávky obrazovky"
+mkdir -p "$dir"
+f="$dir/Nahrávka $(date +%Y-%m-%d\ %H%M%S).mp4"
+geo=""
+if [ "$1" = "oblast" ]; then geo=$(slurp 2>/dev/null) || exit 0; fi
+notify-send -a LatteOS -i media-record "Nahrávanie obrazovky" "Beží. Zastavíš ho znova Win + Alt + R." -t 2500
+if [ -n "$geo" ]; then wf-recorder -f "$f" -g "$geo" >/dev/null 2>&1 & else wf-recorder -f "$f" >/dev/null 2>&1 & fi
+echo $! > "$pidf"
+wait $!
+rm -f "$pidf"
+[ -s "$f" ] || exit 0
+a=$(notify-send -a LatteOS -i "$f" -A otvor=Otvoriť -A priecinok="Otvoriť priečinok" "Nahrávka uložená" "$(basename "$f")")
+case "$a" in otvor) xdg-open "$f" ;; priecinok) latte-app subory "$dir" ;; esac

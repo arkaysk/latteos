@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Tapety
+GenericName=Pozadie a tapety
+Comment=Živé a statické tapety: knižnica, MotionBGS, Wallhaven, Bing, obrazovky, automatická pauza (podľa Aury)
+Exec=latte-app nastavenia pozadie
+Icon=preferences-desktop-wallpaper
+Categories=Settings;DesktopSettings;
+Keywords=tapeta;wallpaper;živá tapeta;video;aura;pozadie;

@@ -1,0 +1,9 @@
+#!/bin/sh
+# latte-prichytenie ukaz X Y W H | skry | lista X Y ZÓNA | lista-skry — náhľad prichytenia okna a lišta rozložení
+# (Windows 11) počas ťahania okna; volá latte/prichytenie.lua.
+# Kreslí ho bežiaci nahlad.qml (IPC „prichytenie“); ak nebeží, náhľad sa neukáže, prichytenie funguje aj tak.
+qml=/usr/share/latteos/apps/nahlad.qml
+pid=$(pgrep -f "^qs -n -p $qml" | head -1)
+[ -n "$pid" ] || exit 0
+case "$1" in lista-skry) shift; set -- listaSkry "$@" ;; esac
+exec qs ipc --pid "$pid" call prichytenie "$@"

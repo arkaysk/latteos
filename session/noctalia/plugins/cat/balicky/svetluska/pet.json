@@ -1,0 +1,28 @@
+{
+ "name": "Svetluška",
+ "about": "lieta v noci a svieti",
+ "profile": "drak",
+ "flyer": true,
+ "facing": "none",
+ "idle": [
+  "sedi",
+  "sedi-2",
+  "svieti"
+ ],
+ "sleep": "sedi-3",
+ "move": [
+  "leti",
+  "leti-2",
+  "leti-3"
+ ],
+ "frames": [
+  "hero",
+  "leti",
+  "leti-2",
+  "leti-3",
+  "sedi",
+  "sedi-2",
+  "sedi-3",
+  "svieti"
+ ]
+}

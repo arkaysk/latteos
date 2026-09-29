@@ -1,0 +1,213 @@
+#!/usr/bin/python3
+"""latte-maskoti — vlastné a komunitné balíčky maskotov (iba dáta: PNG snímky + pet.json, nič spustiteľné).
+
+  latte-maskoti zoznam                 všetky postavy (systémové aj vlastné) ako JSON a zapíše index vlastných
+  latte-maskoti pridaj CESTA           priečinok alebo .zip s balíčkom → ~/.local/share/latteos/maskoti/<id>
+  latte-maskoti pridaj-vyber           to isté s výberom súboru (latte-vyber)
+  latte-maskoti odober ID              odstráni vlastný balíček
+  latte-maskoti export ID CIEĽ.zip     balíček na zdieľanie
+
+Balíček: pet.json { name, about?, profile, flyer?, facing?, idle[], move[], sleep?, frames[], anim?{…}, closeup[]? } a PNG
+pre každú snímku (<snímka>.png). Kontrola: iba .png a pet.json, žiadne podpriečinky ani odkazy, PNG ≤ 1024 px,
+spolu ≤ 20 MB, profil zo známych povah, všetky odkazy na snímky existujú. Systémové postavy sa neprepíšu
+(rovnaké id dostane predponu „moj-“). Pre lištu sa vygenerujú malé snímky (make-mascots.py).
+"""
+import importlib.util, io, json, os, re, shutil, struct, subprocess, sys, tempfile, zipfile
+
+HOME = os.path.expanduser("~")
+DATA = os.environ.get("XDG_DATA_HOME", HOME + "/.local/share")
+USER = os.path.join(DATA, "latteos", "maskoti")
+USER_BAR = os.path.join(DATA, "latteos", "maskoti-lista")
+SYSTEM = "/usr/share/latteos/maskoti"
+MAKE = "/usr/share/latteos/noctalia/plugins/cat/make-mascots.py"
+PROFILES = {"sliz", "drak", "macka", "maid", "kapybara", "turista", "teleport"}
+MAX_TOTAL, MAX_SIDE = 20 * 1024 * 1024, 1024
+
+
+def png_size(path):
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        raise ValueError("%s nie je PNG" % os.path.basename(path))
+    return struct.unpack(">II", head[16:24])
+
+
+def validate(d):
+    """Skontroluje rozbalený balíček v priečinku d, vráti pet.json."""
+    names = os.listdir(d)
+    if "pet.json" not in names:
+        raise ValueError("chýba pet.json")
+    total = 0
+    for n in names:
+        p = os.path.join(d, n)
+        if os.path.islink(p) or not os.path.isfile(p):
+            raise ValueError("balíček smie obsahovať iba súbory (nie priečinky ani odkazy): " + n)
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}\.(png|json)", n) or (n.endswith(".json") and n != "pet.json"):
+            raise ValueError("nepovolený súbor: " + n)
+        total += os.path.getsize(p)
+        if n.endswith(".png"):
+            w, h = png_size(p)
+            if w > MAX_SIDE or h > MAX_SIDE:
+                raise ValueError("%s je príliš veľký (%d×%d, najviac %d px)" % (n, w, h, MAX_SIDE))
+    if total > MAX_TOTAL:
+        raise ValueError("balíček má viac ako 20 MB")
+    with open(os.path.join(d, "pet.json"), encoding="utf-8") as f:
+        meta = json.load(f)
+    if not isinstance(meta, dict) or not isinstance(meta.get("name"), str) or not meta["name"].strip():
+        raise ValueError("pet.json: chýba name")
+    if meta.get("profile") not in PROFILES:
+        raise ValueError("pet.json: profile musí byť jeden z: " + ", ".join(sorted(PROFILES)))
+    have = {n[:-4] for n in names if n.endswith(".png")}
+    meta["frames"] = sorted(have)
+    refs = list(meta.get("idle") or []) + list(meta.get("move") or []) + [meta.get("sleep")] + list(meta.get("closeup") or [])
+    for a in (meta.get("anim") or {}).values():
+        if not isinstance(a, dict) or not isinstance(a.get("frames"), list):
+            raise ValueError("pet.json: anim musí mať frames")
+        a["fps"] = max(0.5, min(24, float(a.get("fps", 4))))
+        a["loop"] = bool(a.get("loop", False))
+        refs += a["frames"]
+    missing = sorted({r for r in refs if r and r not in have})
+    if missing:
+        raise ValueError("chýbajú snímky: " + ", ".join(missing[:8]))
+    if not meta.get("idle"):
+        raise ValueError("pet.json: idle (aspoň jedna snímka v pokoji)")
+    meta.setdefault("move", meta["idle"])
+    # iba známe kľúče, texty skrátené (panel ich ukazuje)
+    keep = {"name", "about", "profile", "flyer", "facing", "rightFacing", "idle", "move", "sleep", "frames", "anim", "closeup",
+            "closeupAt", "scale", "door", "parachute", "offended", "glare", "hearts", "scan", "photo", "charge", "fast",
+            "takeoff", "land", "glide", "fire", "cup", "startle"}
+    meta = {k: v for k, v in meta.items() if k in keep}
+    meta["name"] = meta["name"].strip()[:40]
+    meta["about"] = str(meta.get("about", ""))[:120]
+    return meta
+
+
+def ident(meta, fallback):
+    base = re.sub(r"[^a-z0-9-]+", "-", (fallback or meta["name"]).lower()).strip("-")[:32] or "maskot"
+    return ("moj-" + base) if os.path.isdir(os.path.join(SYSTEM, base)) else base
+
+
+def bar_frames(pid):
+    """Malé snímky pre lištu (44 × 36) z make-mascots.py."""
+    spec = importlib.util.spec_from_file_location("make_mascots", MAKE)
+    mm = importlib.util.module_from_spec(spec); spec.loader.exec_module(mm)
+    tmp = tempfile.mkdtemp()
+    try:
+        os.symlink(os.path.join(USER, pid), os.path.join(tmp, pid))
+        os.makedirs(USER_BAR, exist_ok=True)
+        mm.bar_frames(tmp, USER_BAR)
+    finally:
+        shutil.rmtree(tmp)
+
+
+def index():
+    """Zoznam postáv; vlastné zapíše aj do USER/index.json (číta ho panel na lište)."""
+    out, mine = [], []
+    for root, user in ((SYSTEM, False), (USER, True)):
+        if not os.path.isdir(root):
+            continue
+        for pid in sorted(os.listdir(root)):
+            pj = os.path.join(root, pid, "pet.json")
+            if not os.path.isfile(pj):
+                continue
+            try:
+                m = json.load(open(pj, encoding="utf-8"))
+            except ValueError:
+                continue
+            e = {"id": pid, "name": m.get("name", pid), "about": m.get("about", ""), "flyer": bool(m.get("flyer")), "user": user}
+            out.append(e)
+            if user:
+                mine.append(e)
+    os.makedirs(USER, exist_ok=True)
+    with open(os.path.join(USER, "index.json"), "w", encoding="utf-8") as f:
+        json.dump(mine, f, ensure_ascii=False)
+    return out
+
+
+def add(path):
+    tmp = tempfile.mkdtemp()
+    try:
+        src, name = path, os.path.basename(path.rstrip("/"))
+        if zipfile.is_zipfile(path):
+            name = re.sub(r"\.zip$", "", name, flags=re.I)
+            with zipfile.ZipFile(path) as z:
+                infos = [i for i in z.infolist() if not i.is_dir()]
+                if sum(i.file_size for i in infos) > MAX_TOTAL:
+                    raise ValueError("balíček má viac ako 20 MB")
+                prefix = os.path.commonpath([i.filename for i in infos]) if len(infos) > 1 else ""
+                for i in infos:
+                    rel = i.filename[len(prefix):].lstrip("/") if prefix and "/" in i.filename else i.filename
+                    if "/" in rel or rel.startswith(".") or ".." in rel:
+                        raise ValueError("balíček smie mať súbory iba v jednom priečinku: " + i.filename)
+                    with z.open(i) as fi, open(os.path.join(tmp, rel), "wb") as fo:
+                        shutil.copyfileobj(fi, fo)
+            src = tmp
+        elif os.path.isdir(path):
+            for n in os.listdir(path):
+                p = os.path.join(path, n)
+                if os.path.islink(p) or not os.path.isfile(p):
+                    raise ValueError("balíček smie obsahovať iba súbory: " + n)
+                shutil.copy(p, os.path.join(tmp, n))
+            src = tmp
+        else:
+            raise ValueError("čakám priečinok alebo .zip")
+        meta = validate(src)
+        pid = ident(meta, name)
+        dst = os.path.join(USER, pid)
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        os.makedirs(dst)
+        for n in os.listdir(src):
+            if n != "pet.json":
+                shutil.copy(os.path.join(src, n), os.path.join(dst, n))
+        with open(os.path.join(dst, "pet.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+        bar_frames(pid)
+        index()
+        return pid, meta["name"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main(a):
+    try:
+        if a[:1] == ["zoznam"]:
+            print(json.dumps(index(), ensure_ascii=False)); return 0
+        if a[:1] == ["pridaj"] and len(a) == 2:
+            pid, name = add(a[1]); print(pid); return 0
+        if a[:1] == ["pridaj-vyber"]:
+            r = subprocess.run(["latte-vyber", "--nazov", "Balíček maskota (.zip)", "--typ", "vsetko"],
+                               capture_output=True, text=True)
+            p = r.stdout.strip()
+            if not p:
+                return 1
+            pid, name = add(p)
+            subprocess.run(["notify-send", "-a", "LatteOS", "Maskot pridaný", name])
+            print(pid); return 0
+        if a[:1] == ["odober"] and len(a) == 2 and re.fullmatch(r"[a-z0-9-]+", a[1]):
+            d = os.path.join(USER, a[1])
+            if not os.path.isdir(d):
+                raise ValueError("vlastný balíček %s neexistuje" % a[1])
+            shutil.rmtree(d)
+            for n in os.listdir(USER_BAR) if os.path.isdir(USER_BAR) else []:
+                if n.startswith(a[1] + "-"):
+                    os.remove(os.path.join(USER_BAR, n))
+            index(); return 0
+        if a[:1] == ["export"] and len(a) == 3:
+            d = next((os.path.join(r, a[1]) for r in (USER, SYSTEM) if os.path.isdir(os.path.join(r, a[1]))), None)
+            if not d:
+                raise ValueError("balíček %s neexistuje" % a[1])
+            with zipfile.ZipFile(a[2], "w", zipfile.ZIP_DEFLATED) as z:
+                for n in sorted(os.listdir(d)):
+                    z.write(os.path.join(d, n), a[1] + "/" + n)
+            print(a[2]); return 0
+    except (ValueError, OSError, zipfile.BadZipFile) as e:
+        print("latte-maskoti: " + str(e), file=sys.stderr)
+        subprocess.run(["notify-send", "-a", "LatteOS", "Balíček maskota sa nedá pridať", str(e)], stderr=subprocess.DEVNULL)
+        return 1
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

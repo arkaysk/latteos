@@ -1,0 +1,29 @@
+{
+ "name": "Ktulu",
+ "about": "Ph'nglui… mňau — chápadielka a krídelká",
+ "profile": "macka",
+ "flyer": false,
+ "facing": "none",
+ "idle": [
+  "sedi",
+  "chapadla"
+ ],
+ "sleep": "spi",
+ "move": [
+  "chodza",
+  "leti"
+ ],
+ "rightFacing": [
+  "chodza",
+  "leti"
+ ],
+ "frames": [
+  "chapadla",
+  "chodza",
+  "hero",
+  "leti",
+  "lezi",
+  "sedi",
+  "spi"
+ ]
+}

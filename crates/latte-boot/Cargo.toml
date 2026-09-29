@@ -1,0 +1,9 @@
+[package]
+name = "latte-boot"
+description = "LatteOS štart: detekcia, výber režimu NORMAL/SAFE, počítadlo pádov"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+latte-hw = { path = "../latte-hw" }

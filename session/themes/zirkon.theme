@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Zirkón
+desc = Číry kryštál · dúhový oheň na hranách
+mode = light
+palette = LatteZirkon
+material = fazety
+effects = plne
+border_active = 4F8FC9
+border_inactive = B3C2D4
+wallpaper = 

@@ -1,0 +1,21 @@
+# LatteOS — AI panel (Super+I): rozhovor s AI cez latte-ai (tento PC, domáci server, cloud podľa
+# Nastavenia › Softvér › AI). Text Bar /ai dáva rýchle odpovede; tu je rozhovor s pamäťou.
+
+id          = "latteos/ai"
+name        = "LatteOS AI"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "ai"]
+icon        = "sparkles"
+description = "Rozhovor s AI (lokálne, domáci server, cloud) v paneli."
+
+[[panel]]
+id        = "chat"
+entry     = "chat.luau"
+width     = 560
+height    = 720
+placement = "floating"
+position  = "center"

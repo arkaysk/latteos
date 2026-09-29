@@ -1,0 +1,66 @@
+#!/usr/bin/python3
+"""latte-ostrovy — poloha ostrovov (kapsúl) spodnej lišty Noctalie zo snímky obrazovky (grim).
+
+  latte-ostrovy          JSON [{x, y, w, h}] v súradniciach obrazovky, zľava doprava
+
+Noctalia polohu widgetov nezverejňuje; vyskakovacie okná v tvare L (App Manager, Zariadenia) však potrebujú
+presnú pätu (ostrov), z ktorej vyrastú. Kapsuly majú jednoliatu farbu pozadia: stĺpec patrí ostrovu, ak má
+túto farbu aspoň v tretine riadkov lišty (ikony a text ho nerozbijú). Výsledok sa uloží do
+$XDG_RUNTIME_DIR/latteos/ostrovy.json (na rýchle použitie, kým sa lišta nezmení).
+"""
+import io, json, os, subprocess, sys
+from collections import Counter
+from PIL import Image
+
+
+def main():
+    try:
+        mon = json.loads(subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True, timeout=3).stdout)[0]
+        sw, sh = int(mon["width"] / mon.get("scale", 1)), int(mon["height"] / mon.get("scale", 1))
+    except Exception:
+        sw, sh = 1920, 1080
+    band = 110
+    png = subprocess.run(["grim", "-g", "0,%d %dx%d" % (sh - band, sw, band), "-t", "png", "-"], capture_output=True, timeout=5).stdout
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    w, h = im.size
+    px = im.load()
+    rows = []
+    mode = None
+    for y in range(h):
+        c = Counter(px[x, y] for x in range(0, w, 2)).most_common(1)[0]
+        if c[1] > w / 2 * 0.12:
+            rows.append(y)
+            mode = mode or c[0]
+    if not rows:
+        print("[]"); return 1
+    top, bot = min(rows), max(rows)
+    near = lambda p: abs(p[0] - mode[0]) + abs(p[1] - mode[1]) + abs(p[2] - mode[2]) < 12
+    need = max(3, (bot - top + 1) * 0.3)
+    dist = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+    cols = []
+    for x in range(w):
+        colpx = [px[x, y] for y in range(top, bot + 1)]
+        if sum(1 for p in colpx if near(p)) >= need:
+            cols.append(True); continue
+        # vlastná výplň dlaždice (napr. akcent 6 %): stĺpec je zvislo jednoliaty a blízky farbe kapsuly
+        med = sorted(colpx, key=lambda p: p[0] + p[1] + p[2])[len(colpx) // 2]
+        cols.append(dist(med, mode) < 40 and sum(1 for p in colpx if dist(p, med) < 10) >= len(colpx) * 0.5)
+    out, x = [], 0
+    while x < w:
+        if cols[x]:
+            s = x
+            while x < w and (cols[x] or any(cols[x:x + 4])):
+                x += 1
+            if x - s > 20:
+                out.append({"x": s, "y": sh - band + top, "w": x - s, "h": bot - top + 1})
+        x += 1
+    d = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "latteos")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "ostrovy.json"), "w") as f:
+        json.dump(out, f)
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

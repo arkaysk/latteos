@@ -1,0 +1,18 @@
+# služby relácie chránené pred OOM (session/oom/user-service-50-latteos-oom.conf)
+dbus-broker
+dbus
+pipewire
+pipewire-pulse
+wireplumber
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+xdg-desktop-portal-hyprland
+xdg-document-portal
+xdg-permission-store
+at-spi-dbus-bus
+dconf
+gvfs-daemon
+gvfs-metadata
+gvfs-udisks2-volume-monitor
+gnome-keyring-daemon
+ssh-agent

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# latte-vyber — dialóg výberu súboru alebo priečinka pre aplikácie LatteOS (tlačidlá „Prehľadávať…“).
+# Dialóg je zenity (GTK), rovnaký ako portálový dialóg vo Firefoxe a iných aplikáciách; farby má z témy LatteOS
+# (šablóny gtk3/gtk4 Noctalie). Vybrané cesty vypíše po riadkoch; zrušenie = kód 1 a nič na výstupe.
+#   latte-vyber [--priecinok] [--typ obrazok|video|tapeta|vsetko] [--nazov TEXT] [--start PRIEČINOK] [--viac]
+typ=vsetko; nazov=""; start=""; dir=0; multi=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --priecinok) dir=1 ;;
+        --typ) typ="$2"; shift ;;
+        --nazov) nazov="$2"; shift ;;
+        --start) start="$2"; shift ;;
+        --viac) multi=1 ;;
+    esac
+    shift
+done
+img="*.jpg *.jpeg *.png *.webp *.avif *.bmp *.gif *.JPG *.JPEG *.PNG *.WEBP"
+vid="*.mp4 *.webm *.mkv *.mov *.avi *.gif *.MP4 *.WEBM *.MKV *.MOV"
+args=(--file-selection)
+if [ "$dir" = 1 ]; then
+    args+=(--directory --title="${nazov:-Vybrať priečinok}")
+else
+    args+=(--title="${nazov:-Vybrať súbor}")
+    case "$typ" in
+        obrazok) args+=(--file-filter="Obrázky | $img") ;;
+        video)   args+=(--file-filter="Videá a animácie | $vid") ;;
+        tapeta)  args+=(--file-filter="Obrázky, videá a animácie | $img $vid" --file-filter="Obrázky | $img" --file-filter="Videá a animácie | $vid") ;;
+    esac
+    args+=(--file-filter="Všetky súbory | *")
+fi
+[ "$multi" = 1 ] && args+=(--multiple --separator=$'\n')
+# počiatočný priečinok: zenity ho berie z --filename (s lomkou na konci = priečinok)
+[ -n "$start" ] && [ -d "$start" ] && args+=(--filename="${start%/}/")
+exec zenity "${args[@]}" 2>/dev/null

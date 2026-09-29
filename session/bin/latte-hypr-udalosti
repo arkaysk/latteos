@@ -1,0 +1,9 @@
+#!/bin/sh
+# latte-hypr-udalosti [UDALOSŤ…] — vypisuje udalosti Hyprlandu (socket2) po riadkoch, voliteľne iba vybrané
+# (napr. openwindow closewindow activewindowv2). Pre pluginy Noctalie (runStream): jeden trvalý proces namiesto
+# hyprctl každú sekundu (optimalizácia 26. 9.). Skončí spolu s Hyprlandom.
+sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-}/.socket2.sock"
+[ -S "$sock" ] || { echo "latte-hypr-udalosti: socket2 Hyprlandu nenájdený" >&2; exit 1; }
+if [ $# -eq 0 ]; then exec ncat -U "$sock"; fi
+pat=$(printf '%s|' "$@"); pat=${pat%|}
+exec ncat -U "$sock" | grep --line-buffered -E "^($pat)>>"

@@ -1,0 +1,22 @@
+# LatteOS — prehľad pásky (Super+Tab). Návrh: celá páska v jednom rade, filtrovanie písaním.
+# Okná z Hyprlandu (hyprctl clients) zoradené po plochách a podľa polohy v páske; klik alebo Enter
+# (prvé nájdené) okno zameria. Nahrádza prepínač okien Noctalie pre Super+Tab.
+
+id          = "latteos/overview"
+name        = "LatteOS Prehľad pásky"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "windows"]
+icon        = "layout-columns"
+description = "Prehľad pásky: všetky okná po plochách v poradí pásky, filtrovanie písaním."
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 960
+height    = 560
+placement = "floating"
+position  = "center"

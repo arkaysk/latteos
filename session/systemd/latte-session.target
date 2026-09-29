@@ -1,0 +1,10 @@
+# LatteOS — grafická relácia pre systemd --user. Bez nej nie je aktívny graphical-session.target
+# a xdg-desktop-portal (Requisite=graphical-session.target) sa nespustí: Flatpak aplikácie potom
+# nemajú výber súborov, nastavenia (tlačidlá okien, tmavý režim) ani zdieľanie obrazovky.
+# Spúšťa hyprland.lua pri štarte (po importe prostredia), zastavuje latte-session po skončení Hyprlandu.
+[Unit]
+Description=Relácia LatteOS (Hyprland)
+Documentation=file:///usr/share/latteos/README.md
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target

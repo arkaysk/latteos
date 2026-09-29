@@ -1,0 +1,16 @@
+[Unit]
+Description=LatteOS start: detekcia HW/SW a výber režimu NORMAL/SAFE
+DefaultDependencies=no
+After=systemd-udevd.service systemd-tmpfiles-setup.service local-fs.target
+Wants=systemd-udevd.service
+Before=greetd.service display-manager.service plymouth-quit.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/latte-boot select
+TimeoutStartSec=45
+
+[Install]
+WantedBy=graphical.target
+WantedBy=greetd.service

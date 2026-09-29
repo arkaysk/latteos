@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Brúsený hliník
+desc = Brúsený kov · odlesk podľa myši · okno sa vlní ako plech
+mode = light
+palette = LatteHlinik
+material = kov
+effects = plne
+border_active = 5D6B78
+border_inactive = A3AAB1
+wallpaper = 

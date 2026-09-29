@@ -1,0 +1,23 @@
+{
+ "name": "Tieň",
+ "profile": "teleport",
+ "flyer": false,
+ "facing": "none",
+ "scale": 1.4,
+ "about": "teleportuje sa; občas akoby niečo vzal, ale vždy to vráti",
+ "idle": [
+  "stoji"
+ ],
+ "sleep": "stoji",
+ "move": [
+  "chodza-1",
+  "chodza-2"
+ ],
+ "frames": [
+  "chodza-1",
+  "chodza-2",
+  "drzi",
+  "stoji",
+  "hero"
+ ]
+}

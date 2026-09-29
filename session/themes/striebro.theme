@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Striebro
+desc = Leštené striebro · chladný odlesk
+mode = light
+palette = LatteStriebro
+material = kov
+effects = plne
+border_active = 7A8794
+border_inactive = B4BBC2
+wallpaper = 

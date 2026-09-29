@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# latte-session [safe] — relácia LatteOS po prihlásení (spúšťa ju greetd cez wayland-sessions/*.desktop).
+#
+# Režim berie z /run/latteos/session.env (zapísal latte-boot select pri štarte).
+# NORMAL: Hyprland + Noctalia. Ak Hyprland spadne skôr, než je relácia zdravá (60 s),
+#         relácia sa hneď prepne do SAFE; pád sa zaráta do počítadla (latte-boot session-start).
+# SAFE:   labwc + pixman (bez GL/GPU) + Noctalia, záloha foot; ponuka latte-safe.
+set -u
+
+share=/usr/share/latteos
+state="${XDG_STATE_HOME:-$HOME/.local/state}/latteos"
+mkdir -p "$state"
+exec >>"$state/session.log" 2>&1
+echo "=== latte-session $(date -Is) args=$*"
+
+LATTE_MODE=safe LATTE_RENDERER=pixman LATTE_TIER=safe
+if [ -r /run/latteos/session.env ]; then
+    set -a; . /run/latteos/session.env; set +a
+else
+    echo "chýba /run/latteos/session.env (latte-boot select nebežal) → SAFE"
+fi
+# jazyk a formáty z Nastavení › Systém › Jazyk a región (LANG=…, LC_TIME=…)
+ucfg="${XDG_CONFIG_HOME:-$HOME/.config}/latteos"
+if [ -r "$ucfg/locale" ]; then set -a; . "$ucfg/locale"; set +a; fi
+# priečinky spúšťačov Flatpaku musia existovať pred štartom shellu, inak nové aplikácie (Barista, App Manager)
+# neuvidí, kým sa neprihlásiš znova (sleduje iba existujúce priečinky)
+mkdir -p "$HOME/.local/share/flatpak/exports/share/applications" 2>/dev/null
+# jednotné okenné tlačidlá aj v aplikáciách s vlastnou hlavičkou (GTK, libadwaita, Firefox): – □ ✕ vpravo
+gsettings set org.gnome.desktop.wm.preferences button-layout "appmenu:minimize,maximize,close" 2>/dev/null || true
+chosen_safe=0
+[ "${1:-}" = safe ] && { LATTE_MODE=safe; chosen_safe=1; }
+export LATTE_MODE LATTE_RENDERER LATTE_TIER
+
+export XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=latteos
+export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-logind}"   # z greetd seat cez logind; testy zo SSH: seatd
+export QT_QPA_PLATFORM=wayland GDK_BACKEND=wayland,x11 MOZ_ENABLE_WAYLAND=1
+
+# shell Noctalia: vzhľad LatteOS (téma Latte, ostrovy lišty), ak si používateľ nespravil vlastný
+# ~/.config/noctalia/config.toml. Zmeny z Nastavení ukladá Noctalia do ~/.local/state/noctalia.
+if [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/noctalia/config.toml" ]; then
+    export NOCTALIA_CONFIG_HOME="$share"
+fi
+nstate="${XDG_STATE_HOME:-$HOME/.local/state}/noctalia"
+[ -e "$nstate/.setup-complete" ] || { mkdir -p "$nstate" && touch "$nstate/.setup-complete"; }  # bez uvítacieho sprievodcu Noctalie
+
+run_safe() {
+    echo "SAFE: labwc + pixman (dôvod: ${1:-režim SAFE})"
+    printf '%s\n' "${1:-režim SAFE}" > "$XDG_RUNTIME_DIR/latte-safe-reason"
+    export LATTE_MODE=safe WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1
+    unset MESA_LOADER_DRIVER_OVERRIDE
+    export XDG_CURRENT_DESKTOP=labwc:wlroots
+    exec labwc -C "$share/labwc"
+}
+
+if [ $chosen_safe -eq 1 ]; then
+    run_safe "zvolené pri prihlásení (LatteOS SAFE)"
+fi
+if [ "$LATTE_MODE" != normal ]; then
+    run_safe "$(grep -m1 '^reason' /run/latteos/mode.toml 2>/dev/null | cut -d'"' -f2)"
+fi
+
+latte-boot session-start
+if [ $? -eq 3 ]; then
+    run_safe "opakované pády relácie NORMAL"
+fi
+
+export XDG_CURRENT_DESKTOP=Hyprland
+# Lua modul LatteOS (F2); starý hyprlang súbor ostáva ako záloha
+hconf="$share/hypr/hyprland.lua"
+[ -f "$hconf" ] || hconf="$share/hypr/hyprland.conf"
+# strážcom je latte-session (pád → SAFE), nie start-hyprland: ten po páde reštartuje Hyprland
+# bez -c (vygeneruje cudziu konfiguráciu) a zakryje pád. LATTE_HYPRLAND=false simuluje pád (test).
+# Pád PO 60 s (relácia už bola zdravá): Hyprland sa spustí znova, najviac 3× za 10 minút; potom SAFE.
+# Dôvod: sporadické pády llvmpipe vo VM (setup/f1/RESULTS.md) nemajú vracať používateľa k prihláseniu.
+# záznam pádu pre obrazovku prihlásenia (vývojárska verzia ukazuje prvý log z posledného pádu):
+# /var/lib/latteos/greeter/last-crash.log — skupina latte smie zapisovať, greeter (xdm_t) čítať
+crash_report() {   # $1 rc, $2 trvanie v s, $3 čas štartu (epoch)
+    local dir=/var/lib/latteos/greeter out hlog report
+    [ -d "$dir" ] && [ -w "$dir" ] || return 0
+    out="$dir/last-crash.log"
+    hlog="$(ls -t "$XDG_RUNTIME_DIR"/hypr/*/hyprland.log 2>/dev/null | head -1)"
+    report="$(ls -t "$HOME"/.cache/hyprland/hyprlandCrashReport*.txt 2>/dev/null | head -1)"
+    {
+        echo "Pád relácie NORMAL · $(date '+%-d. %-m. %Y %H:%M') · $USER"
+        echo "Hyprland rc=$1 po $2 s · grafika ${LATTE_RENDERER:-?} · stupeň ${LATTE_TIER:-?}"
+        echo
+        if [ -n "$report" ] && [ "$(stat -c %Y "$report")" -ge "$3" ]; then
+            echo "── crash report ($(basename "$report"))"
+            grep -m1 -i "signal\|reason" "$report"
+            sed -n '/Backtrace/,/^$/p' "$report" | head -14
+            echo
+        fi
+        echo "── jadro (grafika)"
+        journalctl -k -b --since "@$3" --no-pager -o cat 2>/dev/null | grep -i -m6 "segfault\|vmwgfx\|drm\|oom" || echo "(bez hlásení)"
+        if [ -n "$hlog" ]; then
+            echo
+            echo "── koniec hyprland.log"
+            grep -v "^DEBUG" "$hlog" | tail -12
+        fi
+    } > "$out.tmp" 2>/dev/null && mv -f "$out.tmp" "$out"
+    chmod 0664 "$out" 2>/dev/null
+}
+
+restarts=()
+while true; do
+    t0=$(date +%s)
+    "${LATTE_HYPRLAND:-Hyprland}" -c "$hconf"
+    rc=$?
+    dt=$(( $(date +%s) - t0 ))
+    echo "Hyprland skončil: rc=$rc po ${dt}s"
+    systemctl --user stop latte-session.target 2>/dev/null     # portály a služby relácie končia s Hyprlandom
+
+    if [ $rc -eq 0 ]; then
+        latte-boot ok >/dev/null     # riadne odhlásenie nie je pád
+        exit 0
+    fi
+    crash_report "$rc" "$dt" "$t0"
+    if [ $dt -lt 60 ]; then
+        run_safe "Hyprland spadol po ${dt} s (rc=$rc)"
+    fi
+    now=$(date +%s); keep=()
+    for t in "${restarts[@]}"; do [ $(( now - t )) -lt 600 ] && keep+=("$t"); done
+    restarts=("${keep[@]}" "$now")
+    if [ ${#restarts[@]} -gt 3 ]; then
+        run_safe "Hyprland spadol ${#restarts[@]}× za 10 minút"
+    fi
+    echo "Hyprland spadol po ${dt} s → reštart ${#restarts[@]}/3"
+    latte-boot session-start >/dev/null
+done

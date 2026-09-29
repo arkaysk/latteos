@@ -1,0 +1,35 @@
+# LatteOS — Čas (ostrov času na lište): hodiny · zvonček oznámení s počtom · dátum s počtom úloh.
+# Zadanie 24. 9.: klik na hodiny = časové pásma, stopky, budík, minútka; klik na dátum = kalendár a úlohy
+# („št 24. 9. (3)“); medzi nimi zvonček s počtom nových oznámení. Panel vyrastá z lišty pri kliknutom widgete.
+
+id          = "latteos/time"
+name        = "LatteOS Čas"
+version     = "0.2.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "clock", "calendar"]
+icon        = "clock"
+description = "Hodiny, oznámenia a dátum na lište; panel Čas · Oznámenia · Kalendár a úlohy."
+
+[[widget]]
+id    = "clock"
+entry = "widget.luau"
+
+[[widget]]
+id    = "bell"
+entry = "bell.luau"
+
+[[widget]]
+id    = "date"
+entry = "date.luau"
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 440
+height    = 660
+placement = "floating"   # pri kliknutom ostrove (attached by pri priehľadnej lište bol priehľadný)
+position  = "auto"
+open_near_click = true

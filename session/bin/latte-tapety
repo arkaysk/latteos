@@ -1,0 +1,782 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Časti sú prenesené z projektu Aura (https://github.com/antwny/aura, GPL-3.0, resources/upstream/aura):
+# prehrávač cez mpvpaper s IPC, voľby mpv, katalógy MotionBGS / Wallhaven / Bing / Minimalistic, knižnica s náhľadmi.
+"""latte-tapety — živé tapety LatteOS (engine podľa Aury: mpvpaper na vrstve background, IPC socket na obrazovku).
+
+  latte-tapety nastav SÚBOR [--vystup OUT|*] [--mierka fit|fill|stretch]   video (mpvpaper, iba s GPU) alebo obrázok
+                                                    (obrázok = natívna tapeta Noctalie, funguje aj bez GPU)
+  latte-tapety obnov                     pri štarte relácie: posledné tapety na všetkých obrazovkách
+  latte-tapety dalsia | predosla [--vystup OUT]     ďalšia / predošlá z knižnice (ako `aura next/prev`)
+  latte-tapety pauza | pozastav | pokracuj          prepnúť / zastaviť / pustiť (0 % CPU a GPU)
+  latte-tapety stop [--vystup OUT]                  vypnúť živú tapetu (ostane statická tapeta Noctalie)
+  latte-tapety stav                                 JSON: čo hrá na ktorej obrazovke, pauza, nastavenia
+  latte-tapety hlasitost 0-100 · ticho on|off · mierka OUT fit|fill|stretch
+  latte-tapety nastavenie KĽÚČ HODNOTA              auto_pauza (off|skryta|max|full), bateria, farby, hwdec,
+                                                    rotacia (min), rotacia_poradie (postupne|nahodne), len_oblubene
+  latte-tapety oblubena SÚBOR on|off                obľúbená tapeta (striedanie „iba obľúbené“)
+  latte-tapety sluzba                               na pozadí: striedanie tapiet a pauza na batérii (spúšťa obnov)
+  latte-tapety hra on|off                           herný režim: pauza a späť (latte.game)
+  latte-tapety vystupy                              JSON: obrazovky (hyprctl monitors)
+  latte-tapety kniznica                             JSON: videá a obrázky z priečinkov knižnice (s náhľadmi)
+  latte-tapety nahlad SÚBOR                         cesta k náhľadu (vytvorí ho ffmpegthumbnailer / ffmpeg)
+  latte-tapety online motionbgs|wallhaven|bing|minimal [--hladaj Q] [--kategoria K] [--strana N]
+                      [--rozlisenie hd|4k|2k|ultrawide] [--triedenie toplist|date_added|random]   JSON: katalóg
+  latte-tapety stiahni URL NÁZOV                    stiahne do ~/.local/share/latteos/tapety (riadky „P 42“, na konci „OK cesta“)
+  latte-tapety snimky GIF                           JSON {dir, count, focus, delay}: snímky animácie ako PNG (pre textúry okien L)
+  latte-tapety farby SÚBOR                          snímka videa → statická tapeta Noctalie (farby témy z tapety)
+  latte-tapety rezim crop|fit|stretch|repeat|center|span   prispôsobenie obrázka (ako Windows: Vyplniť, Prispôsobiť,
+                                                    Roztiahnuť, Dlaždica, Centrovať, Cez viac obrazoviek)
+  latte-tapety farba #RRGGBB [--vystup OUT]         plná farba namiesto obrázka
+  latte-tapety prezentacia PRIEČINOK|"" [--vystup OUT]   prezentácia (striedanie) z priečinka; "" = z knižnice
+  latte-tapety typ obrazok|farba|prezentacia|ziva   druh pozadia (Nastavenia › Pozadie)
+  latte-tapety adresar pridaj|odober PRIEČINOK      priečinky knižnice
+  latte-tapety pouzi CESTA [--vystup OUT]           pretiahnutý / vybraný súbor: priečinok = prezentácia, obrázok, video
+                                                    (animovaný GIF/WebP bez GPU = softvérová živá tapeta zivatapeta.qml)
+Nastavenia: ~/.config/latteos/tapety.json. Sockety: $XDG_RUNTIME_DIR/latteos/tapety/<obrazovka>.sock
+"""
+import glob, hashlib, json, os, re, shutil, socket, subprocess, sys, time, urllib.parse, urllib.request
+
+HOME = os.path.expanduser("~")
+CFG_DIR = os.environ.get("XDG_CONFIG_HOME") or HOME + "/.config"
+CFG = os.path.join(CFG_DIR, "latteos", "tapety.json")
+DATA = os.path.join(os.environ.get("XDG_DATA_HOME") or HOME + "/.local/share", "latteos", "tapety")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or HOME + "/.cache", "latteos", "tapety")
+RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "latteos", "tapety")
+VIDEO = ("mp4", "webm", "mkv", "avi", "mov", "gif")
+IMAGE = ("jpg", "jpeg", "png", "webp", "avif")
+UA_WEB = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+UA = "LatteOS-Tapety/1.0 (+Aura)"
+DEFAULTS = {
+    "vystupy": {},              # obrazovka alebo "*" → {"subor": cesta, "mierka": "fill"}
+    "zvuk": 0, "ticho": True,
+    "hwdec": "auto-safe",
+    "auto_pauza": "max",        # off | skryta (iba zakrytá) | max (aj maximalizované okno) | full (iba celá obrazovka)
+    "bateria": True,            # na batérii pauza
+    "farby": False,             # farby témy zo snímky tapety (ako Aura „Magic Auto-Theming“)
+    "rotacia": 0,               # minúty > 0: striedať tapety (ako Aura „Rotation“)
+    "rotacia_poradie": "postupne",   # postupne | nahodne
+    "len_oblubene": False,
+    "oblubene": [],
+    "adresare": [HOME + "/Videá/Tapety", HOME + "/Obrázky/Tapety", DATA],
+    "poradie": [],
+    "typ": "obrazok",           # obrazok | farba | prezentacia | ziva (Nastavenia › Pozadie, ako Windows)
+    "farba": "#3B2A20",
+    "nedavne": [],              # naposledy nastavené obrázky (najnovší prvý)
+    "posledna": {},             # obrazovka alebo "*" → posledný statický obrázok (pre ďalšia/predošlá)
+    "prezentacia_priecinok": "",   # "" = celá knižnica
+}
+FILL_MODES = ("crop", "fit", "stretch", "repeat", "center", "span")
+# mpv (živé video) pozná iba vyplniť / prispôsobiť / roztiahnuť
+MPV_SCALE = {"crop": "fill", "fit": "fit", "stretch": "stretch", "repeat": "fit", "center": "fit", "span": "fill"}
+
+
+def load():
+    try:
+        c = json.load(open(CFG))
+    except (OSError, ValueError):
+        c = {}
+    out = dict(DEFAULTS)
+    out.update(c)
+    return out
+
+
+def save(c):
+    os.makedirs(os.path.dirname(CFG), exist_ok=True)
+    tmp = CFG + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(c, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, CFG)
+
+
+def opt(a, name, default=None):
+    if name in a:
+        i = a.index(name); a.pop(i)
+        return a.pop(i) if i < len(a) else default
+    return default
+
+
+def ext(p):
+    return p.rsplit(".", 1)[-1].lower() if "." in p else ""
+
+
+# ── IPC mpv (Aura: engine/mpvpaper.rs) ────────────────────────────────────────────
+def sock(out):
+    return os.path.join(RUN, re.sub(r"[^A-Za-z0-9_.-]", "_", out if out != "*" else "vsetky") + ".sock")
+
+
+def ipc(out, cmd):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(sock(out))
+        s.sendall((json.dumps({"command": cmd}) + "\n").encode())
+        data = s.recv(65536).decode(errors="replace")
+        s.close()
+        for line in data.splitlines():
+            try:
+                j = json.loads(line)
+            except ValueError:
+                continue
+            if "error" in j:
+                return j
+        return {"error": "?"}
+    except OSError:
+        return None
+
+
+def alive(out):
+    r = ipc(out, ["get_property", "pid"])
+    return r is not None and r.get("error") == "success"
+
+
+def running_outputs():
+    return [os.path.basename(p)[:-5].replace("vsetky", "*") for p in glob.glob(RUN + "/*.sock") if alive(os.path.basename(p)[:-5].replace("vsetky", "*"))]
+
+
+def mpv_options(c, image, scaling):
+    # rovnaké voľby ako Aura (build_mpv_options): obrázok = pauza a kvalitné škálovanie, video = slučka a malá vyrovnávacia pamäť
+    if image:
+        o = "image-display-duration=inf --loop-file=inf --pause=yes --no-config --no-audio --scale=spline36 --cscale=spline36 --dscale=mitchell --demuxer-max-bytes=8M --vd-lavc-threads=1"
+    else:
+        o = "loop-file=inf --image-display-duration=inf --hwdec=%s --no-config --demuxer-max-bytes=24M --demuxer-readahead-secs=2 --vd-lavc-threads=2 --background-color=#000000" % c["hwdec"]
+        o += " --no-audio" if c["ticho"] or not c["zvuk"] else " --volume=%d" % min(100, int(c["zvuk"]))
+    o += {"fill": " --panscan=1.0", "stretch": " --no-keepaspect"}.get(scaling, "")
+    return o
+
+
+def gpu_ok():
+    """Živá video tapeta iba s grafickou akceleráciou. S llvmpipe (VM, stupeň Softvér/Minimálny/SAFE) skladanie
+    videa zhodí Hyprland (25. 9.: pád v lp_rast_shade_tile pri mpvpaper → relácia prešla do SAFE)."""
+    tier = os.environ.get("LATTE_TIER", "")
+    try:
+        mode = open("/run/latteos/mode.toml").read()
+        tier = tier or (re.search(r'tier = "(\w+)"', mode) or [None, ""])[1]
+        renderer = (re.search(r'renderer = "([\w-]+)"', mode) or [None, ""])[1]
+    except OSError:
+        renderer = ""
+    try:
+        forced = open(os.path.join(CFG_DIR, "latteos", "tier")).read().strip()
+        tier = forced or tier
+    except OSError:
+        pass
+    return tier not in ("softver", "minimalny", "safe", "") and renderer not in ("sw-gl", "pixman", "")
+
+
+def start(out, path, scaling, c):
+    """Spustí mpvpaper na obrazovke (alebo vymení súbor cez IPC bez bliknutia, ako Aura)."""
+    if not gpu_ok():
+        print("E živá tapeta potrebuje grafickú akceleráciu (stupeň Plný, Štandard alebo Úsporný); pri softvérovom kreslení by zhodila kompozitor", file=sys.stderr)
+        return False
+    os.makedirs(RUN, exist_ok=True)
+    image = ext(path) in IMAGE
+    if alive(out):
+        ipc(out, ["set_property", "panscan", 1.0 if scaling == "fill" else 0.0])
+        ipc(out, ["set_property", "keepaspect", scaling != "stretch"])
+        r = ipc(out, ["loadfile", path, "replace"])
+        if r and r.get("error") == "success":
+            ipc(out, ["set_property", "pause", image])
+            return True
+    stop(out)
+    args = ["mpvpaper", "-l", "background"]
+    mode = c.get("auto_pauza", "max")
+    if mode != "off":
+        args.append("-p")
+        if mode in ("max", "full"):
+            args += ["-a", mode.upper()]
+    args += ["-o", mpv_options(c, image, scaling) + " --input-ipc-server=" + sock(out), out, path]
+    unit = ["systemd-run", "--user", "--scope", "--quiet", "--unit", "latte-tapeta-%s-%d" % (re.sub(r"[^A-Za-z0-9]", "", out) or "vsetky", int(time.time()))] if shutil.which("systemd-run") else []
+    subprocess.Popen(unit + args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    for _ in range(30):
+        if alive(out):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def stop(out):
+    if os.path.exists(sock(out)):
+        ipc(out, ["quit"])
+        time.sleep(0.2)
+        try: os.unlink(sock(out))
+        except OSError: pass
+    # proces bez socketu (spadnutý IPC): podľa príkazového riadku
+    subprocess.run(["pkill", "-f", "mpvpaper .*--input-ipc-server=" + re.escape(sock(out))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def outputs():
+    try:
+        mons = json.loads(subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True, timeout=5).stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        mons = []
+    return [{"name": m.get("name"), "width": m.get("width"), "height": m.get("height"), "x": m.get("x"), "y": m.get("y"),
+             "scale": m.get("scale"), "popis": (m.get("make", "") + " " + m.get("model", "")).strip()} for m in mons]
+
+
+# ── knižnica a náhľady (Aura: scanner/) ────────────────────────────────────────────
+def library(c):
+    items, seen = [], set()
+    for d in c["adresare"]:
+        for p in sorted(glob.glob(os.path.join(os.path.expanduser(d), "**", "*"), recursive=True)):
+            e = ext(p)
+            if e not in VIDEO + IMAGE or not os.path.isfile(p) or p in seen or p.startswith(os.path.join(DATA, "farby") + "/"):
+                continue
+            seen.add(p)
+            st = os.stat(p)
+            items.append({"path": p, "name": os.path.splitext(os.path.basename(p))[0].replace("_", " "), "video": e in VIDEO,
+                          "size": st.st_size, "mtime": int(st.st_mtime), "thumb": thumb_path(p) if os.path.exists(thumb_path(p)) else "",
+                          "online": p.startswith(DATA)})
+    order = {p: i for i, p in enumerate(c.get("poradie") or [])}
+    items.sort(key=lambda x: (order.get(x["path"], 1 << 30), -x["mtime"]))
+    return items
+
+
+def thumb_path(p):
+    return os.path.join(CACHE, "nahlady", hashlib.md5(p.encode()).hexdigest() + ".jpg")
+
+
+def thumb(p):
+    t = thumb_path(p)
+    if os.path.exists(t) and os.path.getmtime(t) >= os.path.getmtime(p):
+        return t
+    os.makedirs(os.path.dirname(t), exist_ok=True)
+    if ext(p) in IMAGE:
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", p, "-vf", "scale=480:-2", "-frames:v", "1", t], capture_output=True)
+    elif shutil.which("ffmpegthumbnailer"):
+        r = subprocess.run(["ffmpegthumbnailer", "-i", p, "-o", t, "-s", "480", "-t", "10%", "-q", "8"], capture_output=True)
+    else:
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "00:00:01", "-i", p, "-an", "-sn", "-vframes", "1", "-vf", "scale=480:-2", t], capture_output=True)
+    return t if r.returncode == 0 and os.path.exists(t) else ""
+
+
+# ── online katalógy (Aura: online/) ────────────────────────────────────────────────
+def http(url, ua=UA, timeout=15, accept=None):
+    req = urllib.request.Request(url, headers={"User-Agent": ua, **({"Accept": accept} if accept else {})})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def html_decode(s):
+    return (s.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">"))
+
+
+def motionbgs(q, cat, page, res):
+    if q:
+        url = "https://motionbgs.com/search?q=" + urllib.parse.quote_plus(q) + ("&page=%d" % page if page > 1 else "")
+    elif not cat or cat == "all":
+        url = "https://motionbgs.com/" + ("%d/" % page if page > 1 else "")
+    else:
+        url = "https://motionbgs.com/tag:%s/" % urllib.parse.quote(cat) + ("%d/" % page if page > 1 else "")
+    html = http(url, UA_WEB, accept="text/html,application/xhtml+xml")
+    b = html.find("<body")
+    html = html[b:] if b >= 0 else html
+    items, seen = [], set()
+    for m in re.finditer(r"/media/(\d+)/([^\"'\s>]{1,160}?)\.jpg", html):
+        mid, img = m.group(1), m.group(2)
+        if mid in seen:
+            continue
+        seen.add(mid)
+        a = html.rfind("<a ", 0, m.start())
+        title = ""
+        if a >= 0:
+            t = re.search(r'title="([^"]*)"', html[a:m.start()])
+            if t:
+                title = re.sub(r"\s*live wallpaper$", "", html_decode(t.group(1)).strip(), flags=re.I)
+        if not title:
+            t = re.search(r'class="?ttl"?>([^<]*)<', html[m.start():m.start() + 800])
+            if t:
+                title = html_decode(t.group(1).strip())
+        if not title:
+            title = " ".join(w.capitalize() for w in img.split(".")[0].split("-") if w and not w.isdigit()) or "MotionBGS " + mid
+        is4k = "4k" in img.lower() or "3840x2160" in img
+        hd = res == "hd" or not is4k
+        items.append({"id": mid, "title": title, "author": "MotionBGS", "thumb": "https://motionbgs.com/i/c/364x205/media/%s/%s.jpg" % (mid, img),
+                      "url": "https://motionbgs.com/dl/%s/%s/" % ("hd" if hd else "4k", mid), "res": "1080p HD" if hd else "4K UHD", "video": True})
+    return items
+
+
+def wallhaven(q, cat, page, res, sort):
+    cats = cat if re.fullmatch(r"[01]{3}", cat or "") else {"general": "100", "anime": "010", "people": "001"}.get(cat, "111")
+    p = {"categories": cats, "purity": "100", "sorting": sort or "toplist", "page": str(page)}
+    if res == "4k": p["atleast"] = "3840x2160"
+    elif res == "2k": p["resolutions"] = "2560x1440"
+    elif res == "ultrawide": p["ratios"] = "21x9,32x9"; p["atleast"] = "2560x1080"
+    else: p["resolutions"] = "1920x1080,2560x1440,3840x2160"
+    if p["sorting"] == "toplist": p["topRange"] = "1M"
+    if q: p["q"] = q
+    d = json.loads(http("https://wallhaven.cc/api/v1/search?" + urllib.parse.urlencode(p)))
+    return [{"id": e["id"], "title": "Wallhaven #" + e["id"], "author": "Wallhaven (%s)" % e.get("category", "artwork"),
+             "thumb": (e.get("thumbs") or {}).get("large") or e["path"], "url": e["path"], "res": e.get("resolution", ""), "video": False}
+            for e in d.get("data") or [] if e.get("path")]
+
+
+def bing(page):
+    out = []
+    if page <= 1:
+        for idx in (0, 8):
+            try:
+                d = json.loads(http("https://www.bing.com/HPImageArchive.aspx?format=js&idx=%d&n=8&mkt=sk-SK" % idx))
+            except (OSError, ValueError):
+                continue
+            out += d.get("images") or []
+    else:
+        d = json.loads(http("https://raw.githubusercontent.com/zkeq/Bing-Wallpaper-Action/main/data/en-US_all.json"))
+        allimg = d.get("data") or []
+        out = allimg[(page - 2) * 24:(page - 1) * 24]
+    items = []
+    for img in out:
+        ub = img.get("urlbase")
+        if not ub:
+            continue
+        title = img.get("title") or ""
+        if title.strip().lower() in ("", "info"):            # slovenský trh: názov je v popise autorských práv
+            title = (img.get("copyright") or "").split(" (")[0] or re.sub(r"([a-z])([A-Z])", r"\1 \2", ub.split("OHR.")[-1].split("_")[0])
+        sd = img.get("startdate") or ""
+        items.append({"id": img.get("hsh") or ub, "title": title, "author": img.get("copyright") or "Microsoft Bing",
+                      "thumb": "https://www.bing.com%s_1920x1080.jpg&pid=hp&w=480&h=270&rs=1&c=4" % ub, "url": "https://www.bing.com%s_UHD.jpg" % ub,
+                      "res": "4K UHD", "video": False, "date": "%s-%s-%s" % (sd[:4], sd[4:6], sd[6:8]) if len(sd) == 8 else ""})
+    return items
+
+
+def minimal(q, page):
+    d = json.loads(http("https://raw.githubusercontent.com/DenverCoder1/minimalistic-wallpaper-collection/main/api/generated/images.json", "Mozilla/5.0 (X11; Linux x86_64; LatteOS)"))
+    items = []
+    for e in d:
+        stem = os.path.splitext(e["name"])[0]
+        author, title = ("Alena Aenami", stem[13:]) if stem.lower().startswith("alena-aenami-") else ("", stem)
+        title = " ".join(w.capitalize() for w in re.split(r"[-_]", title) if w)
+        if q and q.lower() not in (title + " " + author).lower():
+            continue
+        sz = e.get("size") or 0
+        items.append({"id": "minimal_" + e["name"], "title": title, "author": author or "Minimalistic Collection",
+                      "thumb": "https://wsrv.nl/?url=%s&w=400&h=225&fit=cover&output=jpg&q=80" % e["download_url"], "url": e["download_url"],
+                      "res": "4K UHD" if sz > 2_000_000 else ("2K QHD" if sz > 800_000 else "1080p HD"), "video": False})
+    return items[(page - 1) * 48:page * 48]
+
+
+def download(url, name):
+    os.makedirs(DATA, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": UA_WEB if "motionbgs" in url else UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        ctype = r.headers.get("Content-Type", "")
+        final = r.geturl()
+        e = ext(urllib.parse.urlparse(final).path) or {"video/mp4": "mp4", "video/webm": "webm", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(ctype.split(";")[0], "mp4")
+        if e not in VIDEO + IMAGE:
+            e = "mp4" if ctype.startswith("video") else "jpg"
+        safe = re.sub(r"[^\w .,()-]", "", name).strip() or "tapeta"
+        dst = os.path.join(DATA, safe + "." + e)
+        total = int(r.headers.get("Content-Length") or 0)
+        tmp = dst + ".part"
+        got, last = 0, -1
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                pct = int(got * 100 / total) if total else -1
+                if pct != last:
+                    last = pct
+                    print("P", pct, got, total, flush=True)
+    os.replace(tmp, dst)
+    thumb(dst)
+    print("OK", dst, flush=True)
+    return 0
+
+
+def colors(path):
+    """Snímka videa (1 s) → statická tapeta Noctalie; Noctalia/matugen z nej vezme farby témy (Aura: theme/palette.rs)."""
+    os.makedirs(CACHE, exist_ok=True)
+    frame = os.path.join(CACHE, "snimka-" + hashlib.md5(path.encode()).hexdigest()[:10] + ".png")
+    if ext(path) in IMAGE:
+        shutil.copyfile(path, frame)
+    else:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "00:00:01", "-i", path, "-frames:v", "1", frame])
+    if os.path.exists(frame):
+        subprocess.run(["noctalia", "msg", "wallpaper-set", frame], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return frame
+    return ""
+
+
+def motion_focus(frames):
+    """Stred oblasti, kde sa medzi snímkami mení obraz (10.–90. percentil), ako podiel šírky a výšky; inak stred."""
+    try:
+        from PIL import Image, ImageChops
+    except ImportError:
+        return [0.5, 0.5]
+    if len(frames) < 2:
+        return [0.5, 0.5]
+    step = max(1, len(frames) // 24)
+    prev = Image.open(frames[0]).convert("L")
+    w, h = prev.size
+    sx, sy = max(1, w // 160), max(1, h // 100)
+    cols, rows = [0] * w, [0] * h
+    for f in frames[step::step]:
+        im = Image.open(f).convert("L")
+        px = ImageChops.difference(im, prev).load(); prev = im
+        for y in range(0, h, sy):
+            for x in range(0, w, sx):
+                if px[x, y] > 24:
+                    cols[x] += 1; rows[y] += 1
+    def mid(v, n):
+        tot = sum(v)
+        if not tot:
+            return 0.5
+        c, lo, hi = 0, None, None
+        for i, a in enumerate(v):
+            c += a
+            if lo is None and c >= 0.1 * tot: lo = i
+            if hi is None and c >= 0.9 * tot: hi = i
+        return ((lo + hi) / 2) / n
+    return [round(mid(cols, w), 3), round(mid(rows, h), 3)]
+
+
+def on_battery():
+    for p in glob.glob("/sys/class/power_supply/*/online"):
+        if "AC" in p or "ADP" in p or "ACAD" in p:
+            try:
+                return open(p).read().strip() == "0"
+            except OSError:
+                pass
+    return False
+
+
+def set_pause(paused):
+    for out in running_outputs():
+        ipc(out, ["set_property", "pause", paused])
+
+
+def fill_mode():
+    r = subprocess.run(["latte-shellset", "get", "wallpaper.fill_mode"], capture_output=True, text=True)
+    m = r.stdout.strip().strip('"')
+    return m if m in FILL_MODES else "crop"
+
+
+def static_walls():
+    """obrazovka → aktuálny statický obrázok Noctalie"""
+    out = {}
+    for o in outputs():
+        r = subprocess.run(["noctalia", "msg", "wallpaper-get", o["name"]], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            out[o["name"]] = r.stdout.strip()
+    r = subprocess.run(["noctalia", "msg", "wallpaper-get"], capture_output=True, text=True)
+    if r.returncode == 0 and r.stdout.strip():
+        out["*"] = r.stdout.strip()                 # predvolená (aj keď sa obrazovky nedajú zistiť)
+    return out
+
+
+def remember(c, path, out):
+    c["nedavne"] = ([path] + [x for x in c.get("nedavne", []) if x != path and os.path.isfile(x)])[:8]
+    c.setdefault("posledna", {})[out] = path
+
+
+def solid(color):
+    """plná farba = obrázok vo veľkosti celej plochy (sedí pri každom režime prispôsobenia, aj Cez viac obrazoviek)"""
+    from PIL import Image
+    color = color.upper()
+    outs = outputs() or [{"x": 0, "y": 0, "width": 1920, "height": 1080}]
+    w = max(o["x"] + o["width"] for o in outs) - min(o["x"] for o in outs)
+    h = max(o["y"] + o["height"] for o in outs) - min(o["y"] for o in outs)
+    path = os.path.join(DATA, "farby", "farba-%s-%dx%d.png" % (color.lstrip("#"), w, h))
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        Image.new("RGB", (max(16, w), max(16, h)), color).save(path)
+    return path
+
+
+def slideshow_items(c):
+    d = c.get("prezentacia_priecinok") or ""
+    if d and os.path.isdir(d):
+        items = [p for p in sorted(glob.glob(os.path.join(d, "**", "*"), recursive=True)) if os.path.isfile(p) and ext(p) in VIDEO + IMAGE]
+    else:
+        items = [x["path"] for x in library(c)]
+        if c.get("len_oblubene") and c.get("oblubene"):
+            items = [p for p in items if p in c["oblubene"]] or items
+    if not gpu_ok():                       # bez grafickej akcelerácie iba obrázky
+        items = [p for p in items if ext(p) in IMAGE]
+    return items
+
+
+def ensure_service(c):
+    if c.get("rotacia") and (c["vystupy"] or c.get("typ") == "prezentacia"):
+        subprocess.Popen([sys.argv[0], "sluzba"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def main(a):
+    if not a:
+        print(__doc__); return 2
+    cmd, a = a[0], a[1:]
+    c = load()
+    if cmd == "nastav" and a:
+        out = opt(a, "--vystup", "*")
+        keep_type = "--rotacia" in a
+        if keep_type:
+            a.remove("--rotacia")
+        scaling = opt(a, "--mierka", (c["vystupy"].get(out) or {}).get("mierka", MPV_SCALE.get(fill_mode(), "fill")))
+        path = os.path.abspath(os.path.expanduser(a[0]))
+        if not os.path.isfile(path):
+            print("E súbor neexistuje"); return 1
+        if ext(path) in IMAGE:
+            # obrázok: natívna tapeta Noctalie (bez GPU, farby témy z nej); živé video na obrazovke sa vypne
+            for o in ([out] if out != "*" else list(c["vystupy"]) + running_outputs()):
+                stop(o); c["vystupy"].pop(o, None)
+            if out == "*":
+                c["posledna"] = {}
+            c.setdefault("posledna", {})[out] = path
+            if not keep_type:                   # ručný výber (nie prezentácia ani plná farba)
+                remember(c, path, out)
+                c["typ"] = "obrazok"
+            save(c)
+            r = subprocess.run(["noctalia", "msg", "wallpaper-set"] + ([out] if out != "*" else []) + [path], capture_output=True, text=True)
+            print("OK" if r.returncode == 0 else "E " + (r.stderr or r.stdout).strip()[:200]); return r.returncode
+        if out == "*":
+            for o in list(c["vystupy"]):
+                if o != "*":
+                    stop(o)
+            c["vystupy"] = {}
+        else:
+            stop("*")
+            c["vystupy"].pop("*", None)
+        c["vystupy"][out] = {"subor": path, "mierka": scaling}
+        if not keep_type:
+            c["typ"] = "ziva"
+        save(c)
+        ok = start(out, path, scaling, c)
+        if not ok and not gpu_ok():
+            print("E bez GPU: tapeta je uložená a spustí sa na počítači s grafickou akceleráciou"); return 3
+        if c.get("farby"):
+            colors(path)
+        if ok and c.get("bateria") and on_battery():
+            set_pause(True)
+        print("OK" if ok else "E mpvpaper sa nespustil"); return 0 if ok else 1
+    if cmd == "obnov":
+        for out, v in c["vystupy"].items():
+            if os.path.isfile(v.get("subor", "")):
+                start(out, v["subor"], v.get("mierka", "fill"), c)
+        if c.get("bateria") and on_battery():
+            set_pause(True)
+        if ((c.get("rotacia") or c.get("bateria")) and c["vystupy"] and gpu_ok()) or (c.get("rotacia") and c.get("typ") == "prezentacia"):
+            subprocess.Popen([sys.argv[0], "sluzba"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    if cmd == "sluzba":
+        # jediná inštancia (zámok v RUN); striedanie a batéria, kontrola každých 20 s
+        import fcntl
+        os.makedirs(RUN, exist_ok=True)
+        lock = open(os.path.join(RUN, "sluzba.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        last, batt = time.time(), None
+        while True:
+            time.sleep(20)
+            c = load()
+            slides = c.get("rotacia") and c.get("typ") == "prezentacia"
+            if not c["vystupy"] and not slides:
+                return 0
+            b = on_battery() if c.get("bateria") else False
+            if b != batt:
+                set_pause(b); batt = b
+            if c.get("rotacia") and time.time() - last >= int(c["rotacia"]) * 60 and not b:
+                last = time.time()
+                main(["dalsia", "--rotacia"])
+    if cmd == "oblubena" and len(a) == 2:
+        p = os.path.abspath(a[0]); fav = [x for x in c.get("oblubene", []) if x != p]
+        if a[1] == "on": fav.append(p)
+        c["oblubene"] = fav; save(c); return 0
+    if cmd in ("dalsia", "predosla"):
+        rot = ["--rotacia"] if "--rotacia" in a or c.get("typ") == "prezentacia" else []
+        if "--rotacia" in a:
+            a.remove("--rotacia")
+        out = opt(a, "--vystup", "*" if "*" in c["vystupy"] or not c["vystupy"] else next(iter(c["vystupy"])))
+        lib = slideshow_items(c)
+        if not lib:
+            print("E knižnica je prázdna"); return 1
+        cur = (c["vystupy"].get(out) or {}).get("subor") or (c.get("posledna") or {}).get(out)
+        if cmd == "dalsia" and c.get("rotacia_poradie") == "nahodne" and len(lib) > 1:
+            import random
+            return main(["nastav", random.choice([p for p in lib if p != cur]), "--vystup", out] + rot)
+        i = lib.index(cur) if cur in lib else -1
+        nxt = lib[(i + (1 if cmd == "dalsia" else -1)) % len(lib)]
+        return main(["nastav", nxt, "--vystup", out] + rot)
+    if cmd in ("pauza", "pozastav", "pokracuj"):
+        outs = running_outputs()
+        if not outs:
+            print("E nič nehrá"); return 1
+        if cmd == "pauza":
+            r = ipc(outs[0], ["get_property", "pause"])
+            paused = not (r and r.get("data") is True)
+        else:
+            paused = cmd == "pozastav"
+        set_pause(paused)
+        print("pauza" if paused else "hrá"); return 0
+    if cmd == "hra":
+        set_pause(a[:1] == ["on"]); return 0
+    if cmd == "stop":
+        out = opt(a, "--vystup")
+        for o in ([out] if out else list(c["vystupy"]) + running_outputs()):
+            stop(o)
+            c["vystupy"].pop(o, None)
+        save(c); return 0
+    if cmd == "stav":
+        st = {}
+        for out, v in c["vystupy"].items():
+            r = ipc(out, ["get_property", "pause"])
+            st[out] = dict(v, hra=r is not None and r.get("error") == "success", pauza=bool(r and r.get("data") is True))
+        print(json.dumps({"vystupy": st, "nastavenia": {k: c[k] for k in ("zvuk", "ticho", "hwdec", "auto_pauza", "bateria", "farby", "rotacia", "rotacia_poradie", "len_oblubene", "oblubene", "adresare",
+                                                                        "typ", "farba", "prezentacia_priecinok")},
+                          "nedavne": [p for p in c.get("nedavne", []) if os.path.isfile(p)], "rezim": fill_mode(), "staticke": static_walls(),
+                          "okraje": subprocess.run(["latte-shellset", "get", "wallpaper.fill_color"], capture_output=True, text=True).stdout.strip().strip('"'),
+                          "ziva_gif": (open(os.path.join(CFG_DIR, "latteos", "live-wallpaper")).read().strip()[6:] if os.path.exists(os.path.join(CFG_DIR, "latteos", "live-wallpaper")) and open(os.path.join(CFG_DIR, "latteos", "live-wallpaper")).read().startswith("video:") else ""),
+                          "engine": bool(shutil.which("mpvpaper")), "gpu": gpu_ok(), "bateria_teraz": on_battery()}, ensure_ascii=False)); return 0
+    if cmd == "hlasitost" and a:
+        c["zvuk"] = max(0, min(100, int(a[0]))); c["ticho"] = c["zvuk"] == 0; save(c)
+        for out in running_outputs():
+            ipc(out, ["set_property", "volume", c["zvuk"]]); ipc(out, ["set_property", "mute", c["ticho"]])
+        return 0
+    if cmd == "ticho" and a:
+        c["ticho"] = a[0] == "on"; save(c)
+        for out in running_outputs():
+            ipc(out, ["set_property", "mute", c["ticho"]])
+        return 0
+    if cmd == "mierka" and len(a) == 2:
+        out, s = a
+        if out in c["vystupy"]:
+            c["vystupy"][out]["mierka"] = s; save(c)
+        ipc(out, ["set_property", "panscan", 1.0 if s == "fill" else 0.0]); ipc(out, ["set_property", "keepaspect", s != "stretch"])
+        return 0
+    if cmd == "nastavenie" and len(a) == 2:
+        k, v = a
+        if k not in DEFAULTS:
+            print("E neznámy kľúč"); return 2
+        c[k] = json.loads(v) if v[:1] in "[{" else {"true": True, "false": False}.get(v, int(v) if v.isdigit() else v)
+        save(c)
+        if k in ("auto_pauza", "hwdec"):          # voľby procesu: reštart prehrávača
+            main(["obnov"])
+        if k == "rotacia":
+            ensure_service(c)
+        return 0
+    if cmd == "rezim" and a and a[0] in FILL_MODES:
+        r = subprocess.run(["latte-shellset", "set", "wallpaper.fill_mode", a[0]], capture_output=True, text=True)
+        for o in list(c["vystupy"]):
+            main(["mierka", o, MPV_SCALE[a[0]]])
+        print("OK" if r.returncode == 0 else "E " + (r.stderr or r.stdout).strip()[:200]); return r.returncode
+    if cmd == "farba" and a and re.fullmatch(r"#[0-9a-fA-F]{6}", a[0]):
+        out = opt(a, "--vystup", "*")
+        c["typ"] = "farba"; c["farba"] = a[0].upper(); save(c)
+        return main(["nastav", solid(a[0]), "--vystup", out, "--rotacia"])
+    if cmd == "prezentacia" and a:
+        out = opt(a, "--vystup", "*")
+        d = os.path.abspath(os.path.expanduser(a[0])) if a[0] else ""
+        if d and not os.path.isdir(d):
+            print("E priečinok neexistuje"); return 1
+        c["typ"] = "prezentacia"; c["prezentacia_priecinok"] = d
+        if not c.get("rotacia"):
+            c["rotacia"] = 30
+        save(c)
+        rc = main(["dalsia", "--vystup", out, "--rotacia"])
+        ensure_service(load())
+        return rc
+    if cmd == "typ" and a and a[0] in ("obrazok", "farba", "prezentacia", "ziva"):
+        c["typ"] = a[0]
+        if a[0] != "prezentacia" and not c["vystupy"]:
+            c["rotacia"] = 0
+        save(c)
+        if a[0] == "prezentacia":
+            ensure_service(c)
+        print("OK"); return 0
+    if cmd == "adresar" and len(a) == 2 and a[0] in ("pridaj", "odober"):
+        d = os.path.abspath(os.path.expanduser(a[1]))
+        ds = [x for x in c["adresare"] if os.path.abspath(os.path.expanduser(x)) != d]
+        if a[0] == "pridaj":
+            if not os.path.isdir(d):
+                print("E priečinok neexistuje"); return 1
+            ds.append(d)
+        c["adresare"] = ds; save(c); print("OK"); return 0
+    if cmd == "pouzi" and a:
+        out = opt(a, "--vystup", "*")
+        path = os.path.abspath(os.path.expanduser(a[0]))
+        if os.path.isdir(path):
+            return main(["prezentacia", path, "--vystup", out])
+        e = ext(path)
+        if e in ("gif", "webp") and not gpu_ok():
+            live = os.path.join(CFG_DIR, "latteos", "live-wallpaper")
+            with open(live, "w") as f:
+                f.write("video:" + path + "\n")
+            if subprocess.run(["pgrep", "-f", "latteos/apps/[z]ivatapeta.qml"], stdout=subprocess.DEVNULL).returncode != 0:
+                subprocess.Popen(["latte-app", "zivatapeta"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            c["typ"] = "ziva"; save(c); print("OK"); return 0
+        if e not in VIDEO + IMAGE:
+            print("E toto nie je obrázok ani video"); return 1
+        return main(["nastav", path, "--vystup", out])
+    if cmd == "vystupy":
+        print(json.dumps(outputs(), ensure_ascii=False)); return 0
+    if cmd == "kniznica":
+        print(json.dumps(library(c), ensure_ascii=False)); return 0
+    if cmd == "nahlad" and a:
+        print(thumb(a[0])); return 0
+    if cmd == "online" and a:
+        src = a[0]; rest = a[1:]
+        q = opt(rest, "--hladaj", "") or ""
+        cat = opt(rest, "--kategoria", "all")
+        page = int(opt(rest, "--strana", "1"))
+        res = opt(rest, "--rozlisenie", "hd")
+        sort = opt(rest, "--triedenie", "toplist")
+        try:
+            items = {"motionbgs": lambda: motionbgs(q, cat, page, res), "wallhaven": lambda: wallhaven(q, cat, page, res, sort),
+                     "bing": lambda: bing(page), "minimal": lambda: minimal(q, page)}[src]()
+            print(json.dumps({"items": items, "error": ""}, ensure_ascii=False))
+        except Exception as e:                  # sieť, zmena stránky…
+            print(json.dumps({"items": [], "error": str(e)[:200]}, ensure_ascii=False))
+        return 0
+    if cmd == "stiahni" and len(a) >= 2:
+        try:
+            return download(a[0], a[1])
+        except Exception as e:
+            print("E", str(e)[:200]); return 1
+    if cmd == "snimky" and a:
+        # snímky animovaného GIF/WebP ako PNG (Canvas v QML vie kresliť iba statický obrázok; textúra okien L
+        # a dlaždice na lište kreslí snímok podľa aktuálneho snímku AnimatedImage) — raz, potom z vyrovnávacej pamäte
+        src = os.path.abspath(a[0])
+        d = os.path.join(CACHE, "snimky", hashlib.md5((src + str(os.path.getmtime(src))).encode()).hexdigest()[:16])
+        done = os.path.join(d, "hotovo")
+        if not os.path.exists(done):
+            os.makedirs(d, exist_ok=True)
+            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vsync", "0", os.path.join(d, "%03d.png")], capture_output=True, text=True)
+            if r.returncode:
+                print(json.dumps({"dir": "", "count": 0, "error": r.stderr.strip()[:200]})); return 1
+            open(done, "w").close()
+        n = len(glob.glob(os.path.join(d, "*.png")))
+        # ohnisko pohybu (kde sa v animácii niečo deje): ostrov na lište ukáže práve túto časť, nie nehybný okraj
+        fj = os.path.join(d, "ohnisko.json")
+        try:
+            focus = json.load(open(fj))
+        except (OSError, ValueError):
+            focus = motion_focus(sorted(glob.glob(os.path.join(d, "*.png"))))
+            json.dump(focus, open(fj, "w"))
+        # priemerné oneskorenie snímky v ms: textúra potom môže hrať menej snímok za sekundu rovnakou rýchlosťou
+        dj = os.path.join(d, "oneskorenie")
+        try:
+            delay = int(open(dj).read())
+        except (OSError, ValueError):
+            delay = 100
+            try:
+                from PIL import Image
+                with Image.open(src) as im:
+                    ds = []
+                    for i in range(min(getattr(im, "n_frames", 1), 400)):
+                        im.seek(i)
+                        ds.append(im.info.get("duration") or 100)
+                    delay = max(20, int(sum(ds) / len(ds)))
+            except Exception:
+                pass
+            open(dj, "w").write(str(delay))
+        print(json.dumps({"dir": d, "count": n, "focus": focus, "delay": delay})); return 0
+    if cmd == "farby" and a:
+        print(colors(a[0])); return 0
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Zlato
+desc = Brúsené zlato · teplý odlesk podľa myši
+mode = light
+palette = LatteZlato
+material = kov
+effects = plne
+border_active = 9C7A2E
+border_inactive = C7AE74
+wallpaper = 

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Správca zariadení
+GenericName=Device Manager
+Comment=Obrazovky, grafika, zvuk, sieť, disky, vstup a ďalšie zariadenia
+Exec=latte-app zariadenia
+Icon=preferences-desktop-peripherals
+Categories=Settings;HardwareSettings;
+Keywords=zariadenia;device manager;hardver;obrazovka;rozlisenie;

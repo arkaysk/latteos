@@ -1,0 +1,7 @@
+# LatteOS — /usr/lib/tmpfiles.d/latteos.conf
+# stav štartu (počítadlo pádov, „nabudúce SAFE“): skupina latte smie zapisovať (latte-session beží ako používateľ)
+d /var/lib/latteos 2775 root latte -
+d /run/latteos     0755 root root  -
+# obrazovka prihlásenia: vzhľad z Nastavení a záznam posledného pádu (SELinux xdm_var_lib_t, číta greeter)
+d /var/lib/latteos/greeter 2775 root latte -
+d /var/lib/latteos/greeter/avatars 2775 root latte -

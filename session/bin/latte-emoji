@@ -1,0 +1,20 @@
+#!/bin/sh
+# latte-emoji — Win+. ako vo Windows: vyber emoji v Text Bare (spúšťač Noctalie /emo) a vloží sa rovno do okna.
+# Noctalia emoji iba skopíruje do schránky, preto počkáme na zmenu schránky a pošleme Ctrl+V (wtype).
+before=$(wl-paste -n 2>/dev/null | md5sum)
+noctalia msg panel-open launcher /emo >/dev/null 2>&1 || exit 0
+i=0
+while [ $i -lt 300 ]; do                       # najviac 30 s
+    sleep 0.1; i=$((i + 1))
+    now=$(wl-paste -n 2>/dev/null | md5sum)
+    if [ "$now" != "$before" ]; then
+        sleep 0.25                              # panel sa zavrie a fokus sa vráti oknu
+        exec wtype -M ctrl -k v -m ctrl
+    fi
+    # panel zavretý bez výberu (Esc) → koniec (ešte raz pozrieť schránku, výber ju mohol zmeniť tesne pred zavretím)
+    if [ $i -gt 10 ] && ! noctalia msg status 2>/dev/null | grep -q '"panelOpen": true'; then
+        sleep 0.2
+        [ "$(wl-paste -n 2>/dev/null | md5sum)" != "$before" ] && exec wtype -M ctrl -k v -m ctrl
+        exit 0
+    fi
+done

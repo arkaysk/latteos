@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- LatteOS greeter — labwc iba ako nosič obrazovky prihlásenia (bez dekorácií a skratiek). -->
+<labwc_config>
+  <core><decoration>none</decoration></core>
+  <keyboard><default/></keyboard>
+</labwc_config>

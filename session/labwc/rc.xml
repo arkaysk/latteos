@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- LatteOS — labwc, relácia SAFE (/usr/share/latteos/labwc/rc.xml). Beží s WLR_RENDERER=pixman. -->
+<labwc_config>
+  <core><gap>4</gap></core>
+  <theme><cornerRadius>8</cornerRadius><font name="Inter" size="10"/></theme>
+  <keyboard>
+    <keybind key="W-Return"><action name="Execute" command="foot"/></keybind>
+    <keybind key="W-space"><action name="Execute" command="foot -T 'LatteOS SAFE' -e latte-safe"/></keybind>
+    <keybind key="W-l"><action name="Execute" command="noctalia msg panel-toggle launcher"/></keybind>
+    <keybind key="W-q"><action name="Close"/></keybind>
+    <keybind key="A-Tab"><action name="NextWindow"/></keybind>
+    <keybind key="W-S-m"><action name="Exit"/></keybind>
+  </keyboard>
+</labwc_config>

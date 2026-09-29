@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=LatteOS SAFE
+Comment=LatteOS — núdzový režim (labwc, bez GPU)
+Exec=/usr/bin/latte-session safe
+Type=Application
+DesktopNames=labwc;wlroots

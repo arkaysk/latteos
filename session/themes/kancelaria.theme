@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Klasik – kancelária
+desc = Inšpirované Windows · plochá svetlá lišta · bez efektov
+mode = light
+palette = LatteKancelaria
+material = ziadny
+effects = ziadne
+border_active = 2B6CD6
+border_inactive = D0D0D0
+wallpaper = 

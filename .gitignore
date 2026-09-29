@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+*.swp
+.vscode/
+
+# cudzie repozitáre a uložené články z resources/fetch.sh — netrackované
+resources/upstream/
+resources/docs/
+resources/fetch.log
+offline/
+
+# Rust build
+/target/

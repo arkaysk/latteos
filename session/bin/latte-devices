@@ -1,0 +1,685 @@
+#!/usr/bin/python3
+"""latte-devices — Device Manager LatteOS (Správca zariadení): inventár hardvéru a obrazovky.
+
+  latte-devices list                          JSON: skupiny zariadení (Obrazovky, Grafika, Zvuk, Sieť, Disky, Vstup,
+                                              USB, Kamery, Bluetooth, Napájanie, Počítač); bez práv správcu
+  latte-devices siete                         JSON: pripojenia (nmcli), Wi-Fi v okolí, VPN
+  latte-devices siet pripoj|odpoj|zabudni NÁZOV   uložené pripojenie
+  latte-devices wifi SSID                     pripojiť na Wi-Fi (heslo na stdin, ak treba)
+  latte-devices display try NAME MODE SCALE   skúsi režim obrazovky (napr. 1920x1080@60 1.25) — bez uloženia
+  latte-devices display keep NAME MODE SCALE  uloží do ~/.config/latteos/monitors.lua (Hyprland ho načíta pri štarte)
+  latte-devices display revert NAME           vráti uložený (alebo predvolený) režim
+  latte-devices audio                         JSON: výstupy, vstupy, predvolené, aplikácie so zvukom (pactl)
+  latte-devices audio default sink|source MENO   predvolený výstup / vstup
+  latte-devices audio volume sink|app ID PCT     hlasitosť výstupu alebo aplikácie (0–150)
+  latte-devices audio mute sink|app ID           prepnúť stlmenie
+  latte-devices audio presun APP VÝSTUP      prehrávať aplikáciu na inom výstupe (napr. Spotify na AirPlay receiveri)
+  latte-devices audio karty                   JSON: zvukové karty s profilmi (stereo, 2.1, 5.1 = priradenie kanálov) a portami
+                                              (konektory: reproduktory, slúchadlá, mikrofón 1/2, linka = priradenie jackov)
+  latte-devices audio profil KARTA PROFIL     profil karty (pactl set-card-profile)
+  latte-devices audio port sink|source MENO PORT   konektor výstupu / vstupu
+  latte-devices bt                            JSON: Bluetooth (zapnuté, spárované a pripojené zariadenia, batéria)
+  latte-devices bt zapni|vypni|hladaj         napájanie adaptéra; hladaj = 8 s hľadania, vypíše nájdené zariadenia
+  latte-devices bt pripoj|odpoj|sparuj|zabudni MAC
+  latte-devices bezpecnost                    JSON: SSH server, firewall (zóny, predvolené pravidlá), tunely (SSH -L/-R/-D, WireGuard)
+  latte-devices firewall                      JSON: úplné pravidlá aktívnych zón (firewall-cmd; polkit sa môže opýtať na heslo)
+  latte-devices napajanie                     JSON: režim napájania (powerprofilesctl) a herný režim LatteOS
+
+Zariadenie je v jednej skupine podľa toho, čo robí (USB klávesnica je Vstup, USB disk je Disk).
+Stav (podľa starej verzie, hwstatus.py): funguje · chýba firmvér · chýba balík · treba cudzí repozitár · nepodporované
+· nezistené. Zdroj: ovládač v sysfs, záznam jadra (neúspešné načítanie firmvéru), modprobe -R pre modalias.
+Zariadenie bez ovládača, ktoré inde nepatrí, je v skupine „Ostatné zariadenia“ (nič nesmie vypadnúť zo zoznamu).
+Spolupráca: opravu (balík, firmvér, repozitár) urobí App Manager / Inštalátor, živé hodnoty dodá Monitor (latte-sysmon).
+Ukazuje zariadenia, nie ich obsah (súbory sú v Súboroch). Čo sa nedá zistiť, je v „problems“.
+"""
+import glob, json, os, re, subprocess, sys
+
+HOME = os.path.expanduser("~")
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "latteos")
+MONFILE = os.path.join(CFG, "monitors.lua")
+problems = []
+
+
+def read(p, d=""):
+    try:
+        with open(p) as f:
+            return f.read().strip()
+    except OSError:
+        return d
+
+
+def sh(argv, timeout=10, env=None):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ""
+
+
+def human(n):
+    n = float(n or 0)
+    for u in ("B", "kB", "MB", "GB", "TB"):
+        if n < 1024:
+            return ("%.0f %s" if n >= 10 or u == "B" else "%.1f %s") % (n, u)
+        n /= 1024
+    return "%.1f PB" % n
+
+
+def item(name, sub="", status="ok", **details):
+    return {"name": name, "sub": sub, "status": status, "details": {k.replace("_", " "): v for k, v in details.items() if v not in ("", None)}}
+
+
+# ── stav zariadení (stará verzia: latte_common/hwstatus.py) ─────────────────────────────
+STATE_TITLES = {"ok": "funguje", "firmware": "chýba firmvér", "package": "chýba balík", "repo": "treba cudzí repozitár",
+                "unsupported": "nepodporované", "unknown": "nezistené", "off": "vypnuté"}
+# ovládač → balík s firmvérom vo Fedore
+FIRMWARE_PKG = {"iwlwifi": "iwlwifi-mvm-firmware", "iwlmvm": "iwlwifi-mvm-firmware", "amdgpu": "amd-gpu-firmware", "radeon": "amd-gpu-firmware",
+                "i915": "intel-gpu-firmware", "xe": "intel-gpu-firmware", "nouveau": "nvidia-gpu-firmware", "rtw88": "realtek-firmware",
+                "rtw89": "realtek-firmware", "r8169": "realtek-firmware", "rtl8xxxu": "realtek-firmware", "ath9k": "atheros-firmware",
+                "ath10k": "atheros-firmware", "ath11k": "atheros-firmware", "ath12k": "atheros-firmware", "brcmfmac": "brcmfmac-firmware",
+                "mt7921e": "mt7xxx-firmware", "mt7925e": "mt7xxx-firmware", "mt76": "mt7xxx-firmware", "btusb": "linux-firmware",
+                "snd_sof_pci": "alsa-sof-firmware", "sof-audio-pci-intel-tgl": "alsa-sof-firmware", "cirrus": "cirrus-audio-firmware"}
+# hardvér, ktorý vo Fedore ovládač nemá (iba cudzí repozitár): (výrobca, trieda) → (repo, balíky, dôvod)
+NEEDS_REPO = {
+    ("0x10de", "0x03"): ("rpmfusion-nonfree", ["akmod-nvidia", "xorg-x11-drv-nvidia-cuda"],
+                         "Karta NVIDIA nemá ovládač. Otvorený nouveau nie je načítaný a proprietárny je v RPM Fusion Nonfree (zapína sa iba s tvojím súhlasom)."),
+    ("0x14e4", "0x0280"): ("rpmfusion-nonfree", ["broadcom-wl"], "Wi-Fi Broadcom: Fedora preň ovládač nemá, broadcom-wl je v RPM Fusion Nonfree."),
+}
+_KLOG = None
+
+
+def kernel_log():
+    global _KLOG
+    if _KLOG is None:
+        rc, o = sh(["journalctl", "-k", "-b", "-o", "cat", "--no-pager"], timeout=8)
+        if rc != 0:
+            rc, o = sh(["dmesg"], timeout=5)
+        _KLOG = o if rc == 0 else None
+        if _KLOG is None:
+            problems.append("záznam jadra nie je čitateľný — chýbajúci firmvér sa nedá zistiť")
+    return _KLOG
+
+
+def firmware_failures():
+    """slot/ovládač → zoznam súborov firmvéru, ktoré jadro nenačítalo."""
+    out = {}
+    log = kernel_log() or ""
+    for m in re.finditer(r"^(\S+) ([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]|\S+): Direct firmware load for (\S+) failed", log, re.M):
+        out.setdefault(m.group(2), []).append(m.group(3)); out.setdefault(m.group(1), []).append(m.group(3))
+    for m in re.finditer(r"^(\S+) (\S+): firmware: failed to load (\S+)", log, re.M):
+        out.setdefault(m.group(2), []).append(m.group(3)); out.setdefault(m.group(1), []).append(m.group(3))
+    return out
+
+
+def pci_state(slot, driver, cls, vendor):
+    """(stav, dôvod, balíky, repo) pre PCI zariadenie."""
+    full = "0000:" + slot if slot.count(":") == 1 else slot
+    fw = firmware_failures()
+    if driver:
+        miss = fw.get(full) or fw.get(driver)
+        if miss:
+            return "firmware", "Ovládač %s nenačítal firmvér %s." % (driver, ", ".join(sorted(set(miss))[:3])), [FIRMWARE_PKG.get(driver, "linux-firmware")], ""
+        return "ok", "", [], ""
+    if cls.startswith("0x06") or cls.startswith("0x0c05") or cls.startswith("0x0880"):
+        return "ok", "most/zbernica — ovládač netreba", [], ""
+    for (v, c), (repo, pk, why) in NEEDS_REPO.items():
+        if vendor == v and cls.startswith(c):
+            return "repo", why, pk, repo
+    mod = sh(["modprobe", "-R", read("/sys/bus/pci/devices/%s/modalias" % full)], timeout=3)[1].split()
+    if mod:
+        return "package", "Modul %s je v jadre, ale nie je načítaný (blokovaný alebo čaká na firmvér)." % mod[0], [], ""
+    return "unsupported", "Jadro pre toto zariadenie ovládač nemá.", [], ""
+
+
+def with_state(it, state, reason="", packages=None, repo=""):
+    it["state"] = state; it["stateTitle"] = STATE_TITLES.get(state, state); it["reason"] = reason
+    it["packages"] = packages or []; it["repo"] = repo
+    if state not in ("ok", "off"):
+        it["status"] = "warn"
+    return it
+
+
+def displays():
+    rc, out = sh(["hyprctl", "monitors", "-j"])
+    items = []
+    try:
+        for m in json.loads(out or "[]"):
+            modes = []
+            for md in m.get("availableModes", []):
+                r = re.match(r"(\d+)x(\d+)@([\d.]+)Hz", md)
+                if r and int(r.group(1)) >= 1024 and int(r.group(2)) >= 600:
+                    modes.append("%sx%s@%d" % (r.group(1), r.group(2), round(float(r.group(3)))))
+            modes = list(dict.fromkeys(modes))
+            cur = "%dx%d@%d" % (m["width"], m["height"], round(m["refreshRate"]))
+            items.append(dict(item(" ".join(x for x in (m.get("make"), m.get("model")) if x and x != "Unknown") or m["name"],
+                                   "%d × %d · %d Hz · mierka %s" % (m["width"], m["height"], round(m["refreshRate"]), m["scale"]),
+                                   connector=m["name"], serial=m.get("serial", ""), transform=m.get("transform", 0),
+                                   VRR="áno" if m.get("vrr") else "nie"),
+                              connector=m["name"], mode=cur, scale=m["scale"], modes=modes[:24]))
+    except (ValueError, KeyError):
+        pass
+    if not items:   # bez Hyprlandu (SAFE, labwc): pripojené konektory z DRM
+        for c in sorted(glob.glob("/sys/class/drm/card*-*")):
+            if read(c + "/status") == "connected":
+                modes = read(c + "/modes").splitlines()
+                items.append(item(os.path.basename(c).split("-", 1)[1], (modes[0] if modes else "?") + " · z DRM (bez kompozitora)"))
+    return items
+
+
+def pci():
+    rc, out = sh(["lspci", "-mm"])
+    devs = []
+    for line in out.splitlines():
+        f = re.findall(r'"([^"]*)"', line)
+        slot = line.split()[0] if line else ""
+        if len(f) >= 3:
+            drv = os.path.basename(os.path.realpath("/sys/bus/pci/devices/0000:%s/driver" % slot)) if os.path.exists("/sys/bus/pci/devices/0000:%s/driver" % slot) else ""
+            base = "/sys/bus/pci/devices/0000:%s/" % slot
+            devs.append({"slot": slot, "cls": f[0], "vendor": f[1], "device": f[2], "driver": drv, "clsId": read(base + "class"),
+                         "vid": read(base + "vendor"), "did": read(base + "device"), "claimed": False})
+    return devs
+
+
+def gpus(devs):
+    mode = read("/run/latteos/mode.toml")
+    renderer = (re.search(r'renderer = "([^"]+)"', mode) or [None, "?"])[1]
+    tier = (re.search(r'tier = "([^"]+)"', mode) or [None, "?"])[1]
+    out = []
+    for d in devs:
+        if re.search(r"VGA|3D|Display", d["cls"]):
+            d["claimed"] = True
+            it = item(d["vendor"] + " " + d["device"], "ovládač " + (d["driver"] or "žiadny") + " · LatteOS kreslí: " + renderer,
+                      "ok" if d["driver"] else "warn", PCI=d["slot"], ovládač=d["driver"], ID="%s:%s" % (d["vid"][2:], d["did"][2:]), stupeň_výkonu=tier)
+            st = pci_state(d["slot"], d["driver"], d["clsId"], d["vid"])
+            with_state(it, *st)
+            if d["vid"] == "0x10de" and d["driver"] == "nouveau":
+                it["reason"] = "Beží otvorený ovládač nouveau (pomalší v hrách). Proprietárny NVIDIA ovládač je v RPM Fusion — ponúkne ho App Manager › Ovládače."
+            it["sensorPrefix"] = "gpu."
+            out.append(it)
+    return out
+
+
+def audio(devs):
+    out = []
+    for d in devs:
+        if re.search(r"Audio|Multimedia audio", d["cls"]):
+            d["claimed"] = True
+            it = item(d["vendor"] + " " + d["device"], "zvuková karta · ovládač " + (d["driver"] or "žiadny"), PCI=d["slot"], ovládač=d["driver"],
+                      ID="%s:%s" % (d["vid"][2:], d["did"][2:]))
+            with_state(it, *pci_state(d["slot"], d["driver"], d["clsId"], d["vid"]))
+            if it["state"] != "ok":
+                out.append(it)
+    for line in read("/proc/asound/cards").splitlines():
+        r = re.match(r"\s*(\d+) \[(\S+)\s*\]: (.+)", line)
+        if r:
+            out.append(item(r.group(3).split(" - ", 1)[-1], "ALSA karta " + r.group(1), card=r.group(2)))
+    rc, o = sh(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"])
+    desc = (re.search(r'node\.description = "([^"]+)"', o) or [None, ""])[1]
+    if desc:
+        out.insert(0, item(desc, "predvolený výstup (PipeWire)"))
+    if not out:
+        problems.append("zvuk: žiadna zvuková karta")
+    return out
+
+
+def network():
+    out = []
+    rc, o = sh(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"])
+    for line in o.splitlines():
+        f = line.split(":")
+        if len(f) >= 4 and f[1] not in ("loopback",):
+            kind = {"ethernet": "Kábel (Ethernet)", "wifi": "Wi-Fi", "bridge": "Most", "wifi-p2p": "Wi-Fi Direct"}.get(f[1], f[1])
+            mac = read("/sys/class/net/%s/address" % f[0])
+            speed = read("/sys/class/net/%s/speed" % f[0])
+            drv = os.path.basename(os.path.realpath("/sys/class/net/%s/device/driver" % f[0])) if os.path.exists("/sys/class/net/%s/device/driver" % f[0]) else ""
+            slot = os.path.basename(os.path.realpath("/sys/class/net/%s/device" % f[0])) if os.path.exists("/sys/class/net/%s/device" % f[0]) else ""
+            it = item(kind + " · " + f[0], (f[3] or f[2]).replace("\\:", ":"), "ok" if f[2].startswith("connected") or f[2] == "pripojené" else "off",
+                      stav=f[2], MAC=mac, rýchlosť=(speed + " Mb/s") if speed and speed != "-1" else "", ovládač=drv, zbernica=slot)
+            fw = firmware_failures().get(slot) or firmware_failures().get(drv)
+            with_state(it, "firmware" if fw else "ok", ("Ovládač %s nenačítal firmvér %s." % (drv, ", ".join(sorted(set(fw))[:2]))) if fw else "",
+                       [FIRMWARE_PKG.get(drv, "linux-firmware")] if fw else [])
+            it["sensorPrefix"] = "net.%s." % f[0]
+            out.append(it)
+    return out
+
+
+def disks():
+    smart = {}
+    try:
+        for x in json.load(open(os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "hw-root.json"))).get("smart", []):
+            smart[x["name"]] = x
+    except (OSError, ValueError):
+        pass
+    rc, o = sh(["lsblk", "-J", "-d", "-b", "-o", "NAME,MODEL,SIZE,TRAN,RM,ROTA,TYPE"])
+    out = []
+    try:
+        for d in json.loads(o)["blockdevices"]:
+            if d["type"] != "disk" or d["name"].startswith(("zram", "loop")):
+                continue
+            kind = "USB disk" if d.get("tran") == "usb" or d.get("rm") else ("NVMe SSD" if d["name"].startswith("nvme") else ("HDD" if d.get("rota") else "SSD"))
+            sm = smart.get(d["name"], {})             # SMART z Monitora (Hardvér › Podrobnosti so správcom)
+            it = item((d.get("model") or d["name"]).strip(), kind + " · " + human(d["size"]), zariadenie="/dev/" + d["name"], pripojenie=d.get("tran") or "",
+                      zdravie_SMART={True: "v poriadku", False: "ZLYHÁVA — zálohuj"}.get(sm.get("healthy"), ""), teplota=("%s °C" % sm["temp"]) if sm.get("temp") else "",
+                      hodiny_prevádzky=str(sm["hours"]) if sm.get("hours") else "", opotrebenie=("%s %%" % sm["wear"]) if sm.get("wear") is not None else "")
+            if sm.get("healthy") is False:
+                with_state(it, "unknown", "SMART hlási zlyhávanie disku. Zálohuj dáta a disk vymeň.")
+                it["stateTitle"] = "disk zlyháva"
+            it["sensorPrefix"] = "disk.%s." % d["name"]
+            out.append(it)
+    except (ValueError, KeyError):
+        problems.append("disky: lsblk zlyhal")
+    return out
+
+
+def inputs():
+    out = []
+    for block in read("/proc/bus/input/devices").split("\n\n"):
+        name = (re.search(r'N: Name="([^"]+)"', block) or [None, ""])[1]
+        handlers = (re.search(r"H: Handlers=(.+)", block) or [None, ""])[1]
+        if not name or re.search(r"Power Button|Sleep Button|PC Speaker|Video Bus|Lid Switch", name):
+            continue
+        kind = "Klávesnica" if "kbd" in handlers and "mouse" not in handlers else ("Myš / touchpad" if "mouse" in handlers else ("Ovládač" if "js" in handlers else ""))
+        if kind:
+            out.append(item(name, kind))
+    return out
+
+
+def usb():
+    rc, o = sh(["lsusb"])
+    out = []
+    for line in o.splitlines():
+        r = re.match(r"Bus (\d+) Device (\d+): ID (\S+) (.*)", line)
+        if r and "root hub" not in r.group(4).lower():
+            out.append(item(r.group(4) or r.group(3), "USB " + r.group(3), zbernica=r.group(1), zariadenie=r.group(2)))
+    return out
+
+
+def cameras():
+    return [item(read(d + "/name") or os.path.basename(d), "/dev/" + os.path.basename(d)) for d in sorted(glob.glob("/sys/class/video4linux/video*"))]
+
+
+def bluetooth():
+    out = []
+    for h in sorted(glob.glob("/sys/class/bluetooth/hci*")):
+        rc, o = sh(["timeout", "3", "bluetoothctl", "show"], timeout=5)
+        powered = "Powered: yes" in o
+        out.append(item("Bluetooth " + os.path.basename(h), "zapnutý" if powered else "vypnutý", "ok" if powered else "off",
+                        adresa=read(h + "/address")))
+    if out:                                  # spárované zariadenia (slúchadlá, ovládače…)
+        rc, o = sh(["timeout", "3", "bluetoothctl", "devices", "Paired"], timeout=5)
+        for line in o.splitlines():
+            m = re.match(r"Device (\S+) (.+)", line)
+            if m:
+                rc2, inf = sh(["timeout", "2", "bluetoothctl", "info", m.group(1)], timeout=4)
+                con = "Connected: yes" in inf
+                bat = (re.search(r"Battery Percentage: \S+ \((\d+)\)", inf) or [None, ""])[1]
+                out.append(item(m.group(2), ("pripojené" if con else "spárované") + (" · batéria " + bat + " %" if bat else ""), "ok" if con else "off",
+                                adresa=m.group(1), typ=(re.search(r"Icon: (\S+)", inf) or [None, ""])[1]))
+    return out
+
+
+def printers():
+    out = []
+    rc, o = sh(["lpstat", "-p", "-d"], timeout=5)
+    default = (re.search(r"system default destination: (\S+)", o) or [None, ""])[1]
+    for line in o.splitlines():
+        m = re.match(r"printer (\S+) (.*)", line)
+        if m:
+            out.append(item(m.group(1), ("predvolená · " if m.group(1) == default else "") + ("pripravená" if "idle" in m.group(2) else m.group(2)[:60]),
+                            "ok" if "idle" in m.group(2) or "printing" in m.group(2) else "warn"))
+    return out
+
+
+def unclaimed(devs):
+    """Ostatné zariadenia: PCI bez ovládača, ktoré inde nepatria (bez nich by zo zoznamu vypadli)."""
+    out = []
+    for d in devs:
+        if d["claimed"] or re.search(r"Ethernet|Network|Wireless", d["cls"]):
+            continue
+        state = pci_state(d["slot"], d["driver"], d["clsId"], d["vid"])
+        if d["driver"] and state[0] == "ok":
+            continue
+        if state[0] == "ok":                        # most/zbernica
+            continue
+        it = item(d["vendor"] + " " + d["device"], d["cls"] + " · bez ovládača", "warn", PCI=d["slot"], ID="%s:%s" % (d["vid"][2:], d["did"][2:]), trieda=d["clsId"])
+        out.append(with_state(it, *state))
+    for dev in sorted(glob.glob("/sys/bus/usb/devices/*-*")):  # USB rozhrania bez ovládača
+        if ":" in os.path.basename(dev):
+            continue
+        ifs = [i for i in glob.glob(dev + "/*:*") if read(i + "/bInterfaceClass") not in ("09",)]
+        if ifs and not any(os.path.exists(i + "/driver") for i in ifs):
+            name = (read(dev + "/manufacturer") + " " + read(dev + "/product")).strip() or "USB %s:%s" % (read(dev + "/idVendor"), read(dev + "/idProduct"))
+            it = item(name, "USB bez ovládača", "warn", ID="%s:%s" % (read(dev + "/idVendor"), read(dev + "/idProduct")))
+            out.append(with_state(it, "unsupported", "Žiadny ovládač sa k zariadeniu nepripojil.", []))
+    return out
+
+
+def power():
+    out = []
+    for p in sorted(glob.glob("/sys/class/power_supply/*")):
+        t = read(p + "/type")
+        if t == "Battery":
+            cap = read(p + "/capacity")
+            out.append(item("Batéria " + os.path.basename(p), cap + " % · " + read(p + "/status"), "warn" if cap and int(cap) < 15 else "ok",
+                            výrobca=read(p + "/manufacturer"), model=read(p + "/model_name")))
+        elif t == "Mains":
+            out.append(item("Napájací adaptér", "pripojený" if read(p + "/online") == "1" else "odpojený"))
+    rc, o = sh(["powerprofilesctl", "get"])
+    if o.strip():
+        out.append(item("Profil výkonu", {"power-saver": "Úsporný", "balanced": "Vyvážený", "performance": "Výkon"}.get(o.strip(), o.strip())))
+    return out
+
+
+def computer():
+    cpu = read("/proc/cpuinfo")
+    model = (re.search(r"model name\s*: (.+)", cpu) or [None, "?"])[1]
+    cores = len(re.findall(r"^processor", cpu, re.M))
+    mem = int((re.search(r"MemTotal:\s+(\d+)", read("/proc/meminfo")) or [None, "0"])[1]) * 1024
+    rc, virt = sh(["systemd-detect-virt"])
+    vendor, product = read("/sys/class/dmi/id/sys_vendor"), read("/sys/class/dmi/id/product_name")
+    return [item(model, "%d vlákien" % cores, jadro=os.uname().release),
+            item("Pamäť", human(mem)),
+            item(" ".join(x for x in (vendor, product) if x) or "Počítač", "virtuálny stroj: " + virt.strip() if virt.strip() and virt.strip() != "none" else "fyzický PC",
+                 BIOS=read("/sys/class/dmi/id/bios_version"), doska=read("/sys/class/dmi/id/board_name"))]
+
+
+GROUPS = [("obrazovky", "Obrazovky", "device-desktop"), ("grafika", "Grafika", "cpu"), ("zvuk", "Zvuk", "volume"), ("siet", "Sieť", "wifi"),
+          ("disky", "Disky", "database"), ("vstup", "Vstup", "keyboard"), ("usb", "USB", "usb"), ("kamery", "Kamery", "camera"),
+          ("bluetooth", "Bluetooth", "bluetooth"), ("tlac", "Tlačiarne", "printer"), ("napajanie", "Napájanie", "battery"), ("pocitac", "Počítač", "server"),
+          ("ostatne", "Ostatné zariadenia", "help")]
+
+
+def inventory():
+    devs = pci()
+    data = {"obrazovky": displays(), "grafika": gpus(devs), "zvuk": audio(devs), "siet": network(), "disky": disks(), "vstup": inputs(),
+            "usb": usb(), "kamery": cameras(), "bluetooth": bluetooth(), "tlac": printers(), "napajanie": power(), "pocitac": computer()}
+    for d in devs:                                   # sieťové karty majú vlastnú skupinu (Sieť)
+        if re.search(r"Ethernet|Network|Wireless", d["cls"]):
+            d["claimed"] = True
+    data["ostatne"] = unclaimed(devs)
+    # každé zariadenie je v jednej skupine: USB klávesnica/myš je Vstup, USB disk je Disk, USB kamera je Kamera
+    taken = [i["name"].lower() for k in ("vstup", "disky", "kamery") for i in data[k]]
+    data["usb"] = [u for u in data["usb"] if not any(u["name"].lower() in t or t in u["name"].lower() for t in taken)]
+    for k in data:                                   # každé zariadenie má stav (predvolene funguje)
+        for it in data[k]:
+            if "state" not in it:
+                with_state(it, "off" if it["status"] == "off" else "ok")
+    faults = [{"group": k, "name": it["name"], "state": it["state"], "stateTitle": it["stateTitle"], "reason": it["reason"], "packages": it["packages"], "repo": it["repo"]}
+              for k in data for it in data[k] if it["state"] not in ("ok", "off")]
+    total = sum(len(v) for v in data.values())
+    summary = "Všetky zariadenia pracujú normálne" if not faults else "%d %s pozornosť" % (len(faults), "zariadenie potrebuje" if len(faults) == 1 else ("zariadenia potrebujú" if len(faults) < 5 else "zariadení potrebuje"))
+    return {"groups": [{"key": k, "title": t, "glyph": g, "items": data[k]} for k, t, g in GROUPS], "problems": problems,
+            "faults": faults, "summary": summary, "total": total}
+
+
+def networks():
+    """Pripojenia (uložené aj aktívne), Wi-Fi v okolí a VPN — záložka Siete (stará verzia: TABS networks)."""
+    conns = []
+    rc, o = sh(["nmcli", "-t", "-f", "NAME,UUID,TYPE,DEVICE,ACTIVE,AUTOCONNECT", "connection", "show"], timeout=6)
+    for line in o.splitlines():
+        f = re.split(r"(?<!\\):", line)
+        if len(f) >= 6 and f[2] != "loopback":
+            kind = {"802-3-ethernet": "Kábel", "802-11-wireless": "Wi-Fi", "vpn": "VPN", "wireguard": "WireGuard", "bridge": "Most", "bond": "Spojenie"}.get(f[2], f[2])
+            conns.append({"name": f[0].replace("\\:", ":"), "uuid": f[1], "type": kind, "device": f[3], "active": f[4] == "yes", "auto": f[5] == "yes",
+                          "vpn": f[2] in ("vpn", "wireguard")})
+    wifi = []
+    rc, o = sh(["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,BARS", "device", "wifi", "list", "--rescan", "no"], timeout=6)
+    for line in o.splitlines():
+        f = re.split(r"(?<!\\):", line)
+        if len(f) >= 4 and f[1]:
+            wifi.append({"inUse": f[0] == "*", "ssid": f[1].replace("\\:", ":"), "signal": int(f[2] or 0), "security": f[3]})
+    ip = sh(["ip", "-4", "-o", "addr", "show", "scope", "global"], timeout=3)[1]
+    return {"connections": conns, "wifi": sorted(wifi, key=lambda w: -w["signal"])[:30],
+            "addresses": [" ".join(l.split()[1:4:2]) for l in ip.splitlines()]}
+
+
+def pactl_blocks(kind):
+    """pactl list <kind> v textovom formáte (JSON výstup pactl 17 padá na nie-ASCII popisoch)."""
+    rc, out = sh(["pactl", "list", kind], env=dict(os.environ, LC_ALL="C"))   # anglické kľúče (Name, Volume, Mute…)
+    blocks, cur = [], None
+    for line in out.splitlines():
+        m = re.match(r"^\S.*#(\d+)$", line)
+        if m:
+            cur = {"id": m.group(1), "props": {}}
+            blocks.append(cur)
+            continue
+        if cur is None:
+            continue
+        t = line.strip()
+        pm = re.match(r'^([\w.]+) = "(.*)"$', t)
+        if pm:
+            cur["props"][pm.group(1)] = pm.group(2)
+        elif ":" in t and not t.startswith(("balance", "Formats")):
+            k, _, v = t.partition(":")
+            cur.setdefault(k.strip(), v.strip())
+    return blocks
+
+
+def audio_state():
+    def vol(b):
+        m = re.search(r"(\d+)%", b.get("Volume", ""))
+        return int(m.group(1)) if m else 0
+    rc, dsink = sh(["pactl", "get-default-sink"])
+    rc, dsrc = sh(["pactl", "get-default-source"])
+    sinks = [{"id": b["id"], "name": b.get("Name", ""), "desc": b.get("Description", b.get("Name", "")), "volume": vol(b),
+              "mute": b.get("Mute") == "yes", "default": b.get("Name") == dsink.strip()} for b in pactl_blocks("sinks")]
+    sources = [{"id": b["id"], "name": b.get("Name", ""), "desc": b.get("Description", b.get("Name", "")), "volume": vol(b),
+                "mute": b.get("Mute") == "yes", "default": b.get("Name") == dsrc.strip()}
+               for b in pactl_blocks("sources") if not b.get("Name", "").endswith(".monitor")]
+    apps = [{"id": b["id"], "name": b["props"].get("application.name") or b["props"].get("media.name", "?"),
+             "media": b["props"].get("media.name", ""), "volume": vol(b), "mute": b.get("Mute") == "yes", "sink": b.get("Sink", "")}
+            for b in pactl_blocks("sink-inputs")]
+    for x in sinks:                               # výstupy v sieti (AirPlay, Snapcast, iný počítač)
+        x["net"] = bool(re.match(r"^(raop|snapcast|tunnel|rtp|roc)", x["name"]))
+    return {"sinks": sinks, "sources": sources, "apps": apps}
+
+
+def audio_cards():
+    """Zvukové karty: profily (koľko kanálov a či aj vstup) a porty (konektory) s tým, ktorý je aktívny."""
+    rc, out = sh(["pactl", "list", "cards"], env=dict(os.environ, LC_ALL="C"))
+    cards, cur, sect = [], None, ""
+    for line in out.splitlines():
+        if re.match(r"^Card #\d+", line):
+            cur = {"name": "", "desc": "", "profiles": [], "active": "", "ports": []}; cards.append(cur); sect = ""; continue
+        if cur is None:
+            continue
+        t = line.strip()
+        ind = len(line) - len(line.lstrip("\t"))
+        if ind == 1:
+            sect = t.rstrip(":") if t.endswith(":") else ""
+            if t.startswith("Name:"): cur["name"] = t[5:].strip()
+            elif t.startswith("Active Profile:"): cur["active"] = t.split(":", 1)[1].strip()
+            continue
+        if sect == "Properties" and t.startswith('device.description = "'):
+            cur["desc"] = t.split('"')[1]
+        elif sect == "Profiles" and ind == 2:
+            m = re.match(r"^(\S+): (.*) \(sinks: (\d+), sources: (\d+), priority: \d+, available: (\w+)\)$", t)
+            if m and m.group(1) != "off":
+                cur["profiles"].append({"name": m.group(1), "desc": m.group(2), "out": int(m.group(3)), "in": int(m.group(4)), "available": m.group(5) == "yes"})
+        elif sect == "Ports" and ind == 2:
+            m = re.match(r"^(\S+): (.*) \(type: (\w+).*availab\w* ?(\w*)\)$", t)
+            if m:
+                cur["ports"].append({"name": m.group(1), "desc": m.group(2), "type": m.group(3), "dir": "in" if "input" in m.group(1) else "out",
+                                     "plugged": m.group(4) != "no" and "not available" not in t})
+    # aktívny port každého výstupu / vstupu
+    act = {}
+    for kind in ("sinks", "sources"):
+        for b in pactl_blocks(kind):
+            if b.get("Active Port"):
+                act[b.get("Name", "")] = {"port": b["Active Port"], "card": b["props"].get("alsa.card_name", ""), "kind": kind[:-1]}
+    return {"cards": [c for c in cards if c["name"]], "active": act}
+
+
+def bluetooth_state():
+    rc, o = sh(["bluetoothctl", "show"], timeout=4)
+    if rc != 0 or "Controller" not in o:
+        return {"available": False, "powered": False, "devices": []}
+    powered = "Powered: yes" in o
+    devs = []
+    rc, lst = sh(["bluetoothctl", "devices"], timeout=4)
+    for line in lst.splitlines():
+        m = re.match(r"^Device (\S+) (.*)$", line)
+        if not m:
+            continue
+        rc, info = sh(["bluetoothctl", "info", m.group(1)], timeout=4)
+        g = lambda k: (re.search(r"^\s*%s: (.*)$" % k, info, re.M) or [None, ""])[1]
+        bat = re.search(r"Battery Percentage: \S+ \((\d+)\)", info)
+        devs.append({"mac": m.group(1), "name": m.group(2), "paired": g("Paired") == "yes", "connected": g("Connected") == "yes",
+                     "trusted": g("Trusted") == "yes", "icon": g("Icon"), "battery": int(bat.group(1)) if bat else None})
+    return {"available": True, "powered": powered, "devices": sorted(devs, key=lambda d: (not d["connected"], not d["paired"], d["name"]))}
+
+
+def security_state():
+    """SSH server, firewall a tunely — karta Siete (bez práv správcu; úplné pravidlá: `firewall`)."""
+    act = lambda u: sh(["systemctl", "is-active", u], timeout=3)[1].strip()
+    ena = lambda u: sh(["systemctl", "is-enabled", u], timeout=3)[1].strip()
+    port = "22"
+    for line in read("/etc/ssh/sshd_config").splitlines():
+        m = re.match(r"^\s*Port\s+(\d+)", line)
+        if m: port = m.group(1)
+    fw_on = act("firewalld") == "active"
+    zones, default = [], ""
+    if fw_on:
+        default = sh(["firewall-cmd", "--get-default-zone"], timeout=4)[1].strip()
+        rc, z = sh(["firewall-cmd", "--get-active-zones"], timeout=4)
+        cur = None
+        for line in z.splitlines():
+            if not line.startswith(" "):
+                cur = {"name": line.split()[0], "interfaces": [], "services": [], "ports": [], "source": "predvolené"}; zones.append(cur)
+            elif cur and "interfaces:" in line:
+                cur["interfaces"] = line.split(":", 1)[1].split()
+        for zn in zones:                                   # predvolené pravidlá zóny (bez hesla); úplné: `firewall`
+            x = read("/usr/lib/firewalld/zones/%s.xml" % zn["name"])
+            zn["services"] = re.findall(r'<service name="([^"]+)"', x)
+            zn["ports"] = ["%s/%s" % p for p in re.findall(r'<port port="([^"]+)" protocol="([^"]+)"', x)]
+    tunnels = []
+    rc, ps = sh(["ps", "-eo", "pid=,args="], timeout=3)
+    for line in ps.splitlines():
+        pid, _, args = line.strip().partition(" ")
+        if re.match(r"^(\S*/)?ssh\s", args) and re.search(r"\s-[A-Za-z]*[LRD]\s*\S", args):
+            tunnels.append({"pid": int(pid), "cmd": args[:160], "kind": "SSH"})
+    return {"ssh": {"active": act("sshd") == "active", "enabled": ena("sshd") == "enabled", "port": port},
+            "firewall": {"active": fw_on, "default": default, "zones": zones}, "tunnels": tunnels}
+
+
+def firewall_full():
+    rc, o = sh(["firewall-cmd", "--list-all"], timeout=60)
+    if rc != 0:
+        return {"ok": False, "error": o.strip()[:200]}
+    d = {"ok": True}
+    for line in o.splitlines()[1:]:
+        k, _, v = line.strip().partition(":")
+        d[k.strip().replace(" ", "_").replace("-", "_")] = v.split()
+    return d
+
+
+def hypr_monitor(name, mode, scale):
+    code = 'hl.monitor({ output = "%s", mode = "%s", position = "auto", scale = %s })' % (name, mode, float(scale))
+    return sh(["hyprctl", "eval", code])[0]
+
+
+def saved():
+    out = {}
+    for line in read(MONFILE).splitlines():
+        r = re.search(r'output = "([^"]+)", mode = "([^"]+)", position = "auto", scale = ([\d.]+)', line)
+        if r:
+            out[r.group(1)] = (r.group(2), r.group(3))
+    return out
+
+
+def power_state():
+    """Režim napájania ako vo Windows 11 (Úspora / Vyvážený / Výkon) a herný režim LatteOS."""
+    cur = sh(["powerprofilesctl", "get"])[1].strip()
+    avail = re.findall(r"^[* ] *([a-z-]+):$", sh(["powerprofilesctl", "list"])[1], re.M)
+    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return {"cur": cur, "list": list(reversed(avail)), "game": read(os.path.join(state, "latteos", "game-mode")).strip() == "1"}
+
+
+def main(a):
+    if a[:1] == ["siete"]:
+        print(json.dumps(networks(), ensure_ascii=False))
+        return 0
+    if len(a) == 3 and a[0] == "siet" and a[1] in ("pripoj", "odpoj", "zabudni"):
+        return sh(["nmcli", "connection", {"pripoj": "up", "odpoj": "down", "zabudni": "delete"}[a[1]], "id", a[2]], timeout=30)[0]
+    if len(a) == 2 and a[0] == "wifi":
+        pw = sys.stdin.readline().strip() if not sys.stdin.isatty() else ""
+        return subprocess.call(["nmcli", "device", "wifi", "connect", a[1]] + (["password", pw] if pw else []))
+    if a[:1] == ["list"]:
+        print(json.dumps(inventory(), ensure_ascii=False))
+        return 0
+    if a[:1] == ["audio"]:
+        if len(a) == 1:
+            print(json.dumps(audio_state(), ensure_ascii=False))
+            return 0
+        if len(a) == 4 and a[1] == "default" and a[2] in ("sink", "source"):
+            return sh(["pactl", "set-default-" + a[2], a[3]])[0]
+        if len(a) == 5 and a[1] == "volume" and a[2] in ("sink", "app") and a[4].isdigit():
+            pct = str(min(150, int(a[4]))) + "%"
+            return sh(["pactl", "set-sink-volume" if a[2] == "sink" else "set-sink-input-volume", a[3], pct])[0]
+        if len(a) == 4 and a[1] == "mute" and a[2] in ("sink", "app", "source"):
+            return sh(["pactl", {"sink": "set-sink-mute", "app": "set-sink-input-mute", "source": "set-source-mute"}[a[2]], a[3], "toggle"])[0]
+        if len(a) == 4 and a[1] == "presun" and a[2].isdigit():
+            return sh(["pactl", "move-sink-input", a[2], a[3]])[0]
+        if a[1:2] == ["karty"]:
+            print(json.dumps(audio_cards(), ensure_ascii=False))
+            return 0
+        if len(a) == 4 and a[1] == "profil":
+            return sh(["pactl", "set-card-profile", a[2], a[3]])[0]
+        if len(a) == 5 and a[1] == "port" and a[2] in ("sink", "source"):
+            return sh(["pactl", "set-%s-port" % a[2], a[3], a[4]])[0]
+        return 2
+    if a[:1] == ["bt"]:
+        if len(a) == 1:
+            print(json.dumps(bluetooth_state(), ensure_ascii=False)); return 0
+        if len(a) == 2 and a[1] in ("zapni", "vypni"):
+            return sh(["bluetoothctl", "power", "on" if a[1] == "zapni" else "off"])[0]
+        if len(a) == 2 and a[1] == "hladaj":
+            sh(["bluetoothctl", "--timeout", "8", "scan", "on"], timeout=12)
+            print(json.dumps(bluetooth_state(), ensure_ascii=False)); return 0
+        if len(a) == 3 and re.match(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$", a[2], re.I):
+            mac = a[2]
+            if a[1] == "sparuj":
+                for c in (["pair", mac], ["trust", mac], ["connect", mac]):
+                    rc = sh(["bluetoothctl", "--timeout", "20"] + c, timeout=25)[0]
+                return rc
+            cmd = {"pripoj": "connect", "odpoj": "disconnect", "zabudni": "remove"}.get(a[1])
+            if cmd:
+                return sh(["bluetoothctl", cmd, mac], timeout=20)[0]
+        return 2
+    if a[:1] == ["bezpecnost"]:
+        print(json.dumps(security_state(), ensure_ascii=False)); return 0
+    if a[:1] == ["firewall"]:
+        print(json.dumps(firewall_full(), ensure_ascii=False)); return 0
+    if a[:1] == ["napajanie"]:
+        print(json.dumps(power_state(), ensure_ascii=False)); return 0
+    if len(a) >= 3 and a[0] == "display":
+        name = a[2]
+        if not re.match(r"^[\w.-]+$", name):
+            return 2
+        if a[1] in ("try", "keep") and len(a) == 5:
+            mode, scale = a[3], a[4]
+            if not re.match(r"^\d+x\d+@\d+(\.\d+)?$", mode) or not re.match(r"^\d+(\.\d+)?$", scale):
+                print("zlý režim alebo mierka", file=sys.stderr)
+                return 2
+            if a[1] == "try":
+                return hypr_monitor(name, mode, scale)
+            s = saved()
+            s[name] = (mode, scale)
+            os.makedirs(CFG, exist_ok=True)
+            with open(MONFILE + ".tmp", "w") as f:
+                f.write("-- LatteOS — obrazovky (zapísal Device Manager / Nastavenia › Hardvér › Obrazovky)\n")
+                for n, (m, sc) in sorted(s.items()):
+                    f.write('hl.monitor({ output = "%s", mode = "%s", position = "auto", scale = %s })\n' % (n, m, sc))
+            os.replace(MONFILE + ".tmp", MONFILE)
+            return hypr_monitor(name, mode, scale)
+        if a[1] == "revert":
+            s = saved()
+            if name in s:
+                return hypr_monitor(name, *s[name])
+            return sh(["hyprctl", "eval", 'hl.monitor({ output = "%s", mode = "preferred", position = "auto", scale = 1 })' % name])[0]
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

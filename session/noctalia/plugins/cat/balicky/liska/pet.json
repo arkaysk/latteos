@@ -1,0 +1,25 @@
+{
+ "name": "Líška",
+ "about": "behá po ploche a hrá sa s kurzorom",
+ "profile": "macka",
+ "flyer": false,
+ "facing": "left",
+ "idle": [
+  "sedi",
+  "sedi-2"
+ ],
+ "sleep": "spi",
+ "move": [
+  "beh",
+  "beh-2"
+ ],
+ "frames": [
+  "beh",
+  "beh-2",
+  "hero",
+  "sedi",
+  "sedi-2",
+  "skok",
+  "spi"
+ ]
+}

@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Úsporná (FPS)
+desc = Plné farby · bez priehľadnosti, tieňov, blur a animácií
+mode = dark
+palette = LatteUsporna
+material = ziadny
+effects = ziadne
+border_active = 9AD36A
+border_inactive = 3A3A3A
+wallpaper = 

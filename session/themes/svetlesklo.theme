@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Klasik – svetlé sklo
+desc = Inšpirované macOS · svetlé priesvitné ostrovy, veľké zaoblenia
+mode = light
+palette = LatteSvetleSklo
+material = sklo
+effects = jemne
+border_active = 3478F6
+border_inactive = D2D5DB
+wallpaper = 

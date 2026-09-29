@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Súbory
+GenericName=Správca súborov
+Comment=Data Manager LatteOS — Tento počítač, dva panely, detail
+Exec=latte-app subory %F
+Icon=system-file-manager
+Categories=System;FileManager;Utility;
+Keywords=subory;files;data;manager;disky;
+MimeType=inode/directory;

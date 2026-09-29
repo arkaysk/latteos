@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Jantár
+desc = Teplá priesvitnosť s bublinkami a inklúziami
+mode = dark
+palette = LatteJantar
+material = jantar
+effects = jemne
+border_active = E2963C
+border_inactive = 6B4220
+wallpaper = 

@@ -1,0 +1,93 @@
+#!/usr/bin/python3
+"""latte-shellset — zmení voľbu Noctalie z Nastavení LatteOS bez editovania súborov rukou.
+
+Zapisuje do ~/.local/state/noctalia/settings.toml (vrstva prepisov nad /usr/share/latteos/noctalia/config.toml),
+ktorú Noctalia sleduje a prevezme hneď (hot reload).
+
+  latte-shellset get  bar.main.margin_ends
+  latte-shellset set  bar.main.margin_ends 24        (číslo, true/false, alebo text)
+  latte-shellset unset bar.main.margin_ends          (späť na predvolenú hodnotu LatteOS)
+"""
+import os, re, sys, tomllib
+
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "noctalia")
+PATH = os.path.join(STATE, "settings.toml")
+BARE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def key(k):
+    return k if BARE.match(k) else '"%s"' % k.replace('"', '\\"')
+
+
+def value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, list):
+        return "[ " + ", ".join(value(x) for x in v) + " ]"
+    return '"%s"' % str(v).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def dump(d, prefix=()):
+    out = []
+    plain = [(k, v) for k, v in d.items() if not isinstance(v, dict)]
+    tables = [(k, v) for k, v in d.items() if isinstance(v, dict)]
+    if prefix and (plain or not tables):
+        out.append("[%s]" % ".".join(key(p) for p in prefix))
+    for k, v in plain:
+        out.append("%s = %s" % (key(k), value(v)))
+    if plain:
+        out.append("")
+    for k, v in tables:
+        out.extend(dump(v, prefix + (k,)))
+    return out
+
+
+def parse(s):
+    if s in ("true", "false"):
+        return s == "true"
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+def main(a):
+    if len(a) < 2 or a[0] not in ("get", "set", "unset") or (a[0] == "set" and len(a) != 3):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        with open(PATH, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        data = {}
+    parts = a[1].split(".")
+    node = data
+    for p in parts[:-1]:
+        if a[0] == "get" and p not in node:
+            return 1
+        node = node.setdefault(p, {})
+    if a[0] == "get":
+        if parts[-1] not in node:
+            return 1
+        print(node[parts[-1]])
+        return 0
+    if a[0] == "set":
+        node[parts[-1]] = parse(a[2])
+    else:
+        node.pop(parts[-1], None)
+    os.makedirs(STATE, exist_ok=True)
+    tmp = PATH + ".latte"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(dump(data)).rstrip() + "\n")
+    os.replace(tmp, PATH)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

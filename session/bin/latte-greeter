@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# latte-greeter — obrazovka prihlásenia (greetd default_session). Voľba v /etc/latteos/boot.toml:
+#   greeter = "latte"     vlastný greeter LatteOS (Quickshell QML pod labwc + pixman, bez GPU)
+#   greeter = "tui"       textový tuigreet
+#   greeter = "noctalia"  Noctalia Greeter — pod greetd na VirtualBoxe prepúšťa pamäť jadra
+#                         (~36 MB/s, setup/f1/RESULTS.md), nepoužívať
+# Ak grafický greeter do 10 s spadne, nasleduje tuigreet.
+LATTE_MODE=safe LATTE_RENDERER=pixman
+[ -r /run/latteos/session.env ] && { set -a; . /run/latteos/session.env; set +a; }
+
+session="LatteOS"
+[ "$LATTE_MODE" = safe ] && session="LatteOS SAFE"
+export LIBSEAT_BACKEND=logind
+[ "$LATTE_RENDERER" != hw ] && export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1
+
+tui() {
+    exec tuigreet --time --remember --remember-session \
+        --sessions /usr/share/latteos/sessions --cmd /usr/bin/latte-session --greeting "LatteOS — prihlásenie (režim: ${LATTE_MODE^^})"
+}
+greeter="$(sed -n 's/^greeter *= *"\?\([a-z]*\)"\?.*/\1/p' /etc/latteos/boot.toml 2>/dev/null)"
+greeter="${greeter:-latte}"
+
+if [ "$greeter" = latte ]; then
+    # labwc + pixman + Qt software: overená kombinácia bez GL, pamäť neprepúšťa
+    export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1 QT_QUICK_BACKEND=software QT_QPA_PLATFORM=wayland
+    export XDG_CURRENT_DESKTOP=labwc:wlroots
+    export LATTE_REASON="$(sed -n 's/^reason = "\(.*\)"$/\1/p' /run/latteos/mode.toml 2>/dev/null)"
+    unset MESA_LOADER_DRIVER_OVERRIDE
+    t0=$(date +%s)
+    labwc -C /usr/share/latteos/greeter/labwc \
+        -s "sh -c 'qs -p /usr/share/latteos/greeter/shell.qml; labwc --exit'"
+    rc=$?
+    if [ $rc -ne 0 ] && [ $(( $(date +%s) - t0 )) -lt 10 ]; then
+        logger -t latte-greeter "greeter LatteOS zlyhal (rc=$rc), prechádzam na tuigreet"
+        tui
+    fi
+    exit $rc
+fi
+[ "$greeter" = noctalia ] || tui
+
+t0=$(date +%s)
+/usr/bin/noctalia-greeter-session -- --session "$session"
+rc=$?
+# greeter skončí po úspešnom prihlásení (rc=0); rýchly pád → textová záloha
+if [ $rc -ne 0 ] && [ $(( $(date +%s) - t0 )) -lt 10 ]; then
+    logger -t latte-greeter "noctalia-greeter zlyhal (rc=$rc), prechádzam na tuigreet"
+    tui
+fi
+exit $rc

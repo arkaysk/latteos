@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# latte-safe — ponuka režimu SAFE (textová, beží vo foot; funguje bez GL aj bez shellu).
+# Spúšťa ju autostart labwc a skratka Super+Space.
+if [ "${1:-}" = try-normal ]; then   # z ponuky labwc: vynulovať počítadlo a odhlásiť
+    latte-boot reset && labwc --exit
+    exit
+fi
+reason="$(cat "$XDG_RUNTIME_DIR/latte-safe-reason" 2>/dev/null || echo 'režim SAFE')"
+log="${XDG_STATE_HOME:-$HOME/.local/state}/latteos/session.log"
+
+while true; do
+    clear
+    cat <<TXT
+  ☕  LatteOS — režim SAFE
+
+  Dôvod: $reason
+
+  1) Diagnostika — posledný log relácie a Hyprlandu
+  2) Skúsiť NORMAL znova (vynuluje počítadlo pádov a odhlási)
+  3) Terminál
+  4) Sieť (nmtui)
+  5) Vrátiť posledný update (dnf history undo last, pýta heslo)
+  6) Stav režimu (latte-boot status)
+  7) Odhlásiť
+  8) Reštartovať
+  9) Vypnúť
+  q) Zavrieť ponuku (Super+Space ju otvorí znova)
+TXT
+    read -r -n1 -p "  Voľba: " c; echo
+    case "$c" in
+        1) { echo "== $log"; tail -n 80 "$log"; echo; echo "== Hyprland (posledný beh)";
+             tail -n 60 "$(ls -t "$XDG_RUNTIME_DIR"/hypr/*/hyprland.log 2>/dev/null | head -1)" 2>/dev/null; } | less -R ;;
+        2) exec "$0" try-normal ;;
+        3) foot & ;;
+        4) nmtui ;;
+        5) sudo dnf history undo last; read -r -p "Enter…" ;;
+        6) latte-boot status | less ;;
+        7) labwc --exit ;;
+        8) systemctl reboot ;;
+        9) systemctl poweroff ;;
+        q|Q) exit 0 ;;
+    esac
+done

@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+"""latte-sklo — softvérové sklo pre panely LatteOS: rozmazaná kópia aktuálnej tapety v rozmere obrazovky.
+
+  latte-sklo [ŠÍRKA VÝŠKA]    vytvorí ~/.cache/latteos/sklo.png (ak sa tapeta ani rozmer nezmenili, nič nerobí)
+
+Panely (common/Sklo.qml) z nej kreslia výrez presne pod sebou, takže vyzerajú ako matné sklo nad tapetou — aj bez GPU
+(blur robí raz CPU pri zmene tapety, nie pri každom snímku). Tapetu zistí cez `noctalia msg wallpaper-get`.
+"""
+import json, os, subprocess, sys
+from PIL import Image, ImageFilter
+
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "latteos")
+OUT, META = os.path.join(CACHE, "sklo.png"), os.path.join(CACHE, "sklo.json")
+
+
+def screen():
+    try:
+        m = json.loads(subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3).stdout)[0]
+        return int(m["width"] / (m.get("scale") or 1)), int(m["height"] / (m.get("scale") or 1))
+    except Exception:
+        return 1920, 1080
+
+
+def main(a):
+    w, h = (int(a[0]), int(a[1])) if len(a) >= 2 else screen()
+    try:
+        src = subprocess.run(["noctalia", "msg", "wallpaper-get"], capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        src = ""
+    if not src or not os.path.isfile(src):
+        return 1
+    key = {"src": src, "mtime": os.path.getmtime(src), "w": w, "h": h}
+    try:
+        if json.load(open(META)) == key and os.path.exists(OUT):
+            print(OUT); return 0
+    except (OSError, ValueError):
+        pass
+    im = Image.open(src).convert("RGB")
+    k = max(w / im.width, h / im.height)                       # vyplniť obrazovku ako tapeta (cover), stred
+    im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.BILINEAR)
+    im = im.crop(((im.width - w) // 2, (im.height - h) // 2, (im.width - w) // 2 + w, (im.height - h) // 2 + h))
+    small = im.resize((max(1, w // 8), max(1, h // 8)), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4))
+    im = small.resize((w, h), Image.BICUBIC)
+    os.makedirs(CACHE, exist_ok=True)
+    im.save(OUT + ".tmp.png", optimize=False); os.replace(OUT + ".tmp.png", OUT)
+    json.dump(key, open(META, "w"))
+    print(OUT)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

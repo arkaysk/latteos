@@ -1,0 +1,289 @@
+#!/usr/bin/python3
+"""latte-net — tlačidlo NET (F6): zakázať aplikácii internet, bez práv správcu.
+
+  latte-net status APP_ID          on | off
+  latte-net off APP_ID             aplikácia nesmie na internet
+  latte-net on APP_ID              aplikácia smie na internet (predvolené)
+  latte-net resolve TRIEDA          id aplikácie pre triedu okna (status/on/off ju prekladajú samy)
+  latte-net list                   aplikácie s vypnutým NET
+  latte-net used PID               1, ak proces alebo jeho potomkovia majú spojenie mimo lo (inak 0)
+  latte-net exec -- PRÍKAZ…        spustí príkaz bez siete (bubblewrap --unshare-net; zostane iba lo)
+
+APP_ID je názov .desktop súboru bez prípony (napr. org.mozilla.firefox, foot).
+Okamžite (25. 9.): vypnutie zapíše aplikáciu do ~/.config/latteos/net-vypnute a služba latte-netd (root) jej cgroup
+hneď odreže internet cez nftables a ukončí otvorené spojenia — bežiaci Discord hneď stratí spojenie, video dohrá
+iba to, čo má načítané. Natívne bežiace procesy presunie latte-net do vlastného scope app-latte-<ID>-<pid>.scope.
+- Flatpak aplikácia: flatpak override --user --unshare=network (izolácia Flatpaku).
+- Natívna aplikácia: NET je položka jej Setup Planu (~/.config/latteos/plany/APP.json). Prekrytie .desktop
+  v ~/.local/share/applications spúšťa aplikáciu cez `latte-sandbox run APP --` (bubblewrap podľa plánu);
+  každý spúšťač (lišta, Text Bar, App Manager) ho rešpektuje. Poznámka: aplikácia spustená inak (z terminálu) sieť má.
+"""
+import glob, json, os, re, shutil, subprocess, sys
+
+HOME = os.path.expanduser("~")
+USER_APPS = HOME + "/.local/share/applications"
+MARK = "X-LatteOS-NET=off"
+DIRS = [HOME + "/.local/share/flatpak/exports/share/applications", "/var/lib/flatpak/exports/share/applications", "/usr/share/applications"]
+
+
+def find_desktop(app):
+    for d in DIRS:
+        p = os.path.join(d, app + ".desktop")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def resolve(app):
+    """Trieda okna → id .desktop súboru (discord → com.discordapp.Discord, cez StartupWMClass alebo koniec id)."""
+    if find_desktop(app):
+        return app
+    low = app.lower()
+    for d in DIRS:
+        for p in sorted(glob.glob(d + "/*.desktop")):
+            base = os.path.basename(p)[:-8]
+            if base.lower() == low or base.lower().endswith("." + low):
+                return base
+            try:
+                m = re.search(r"^StartupWMClass=(.*)$", open(p, encoding="utf-8", errors="replace").read(), re.M)
+            except OSError:
+                continue
+            if m and m.group(1).strip().lower() == low:
+                return base
+    return app
+
+
+def is_flatpak(app):
+    p = find_desktop(app)
+    return bool(p and "/flatpak/" in p)
+
+
+def override_path(app):
+    return os.path.join(USER_APPS, app + ".desktop")
+
+
+PLANS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or HOME + "/.config", "latteos", "plany")
+OFFLIST = os.path.join(os.environ.get("XDG_CONFIG_HOME") or HOME + "/.config", "latteos", "net-vypnute")
+
+
+def offlist():
+    try:
+        return [l.strip() for l in open(OFFLIST, encoding="utf-8") if l.strip() and not l.startswith("#")]
+    except OSError:
+        return []
+
+
+def set_offlist(app, off):
+    ids = [x for x in offlist() if x != app] + ([app] if off else [])
+    os.makedirs(os.path.dirname(OFFLIST), exist_ok=True)
+    with open(OFFLIST + ".tmp", "w", encoding="utf-8") as f:
+        f.write("# aplikácie s vypnutým NET (latte-net); latte-netd im okamžite odreže internet\n" + "".join(x + "\n" for x in ids))
+    os.replace(OFFLIST + ".tmp", OFFLIST)
+
+
+def exec_names(app):
+    """Mená programov z Exec .desktop súboru (napr. firefox, foot)."""
+    src = find_desktop(app)
+    names = {app.split(".")[-1].lower()}
+    if src:
+        for line in open(src, encoding="utf-8", errors="replace"):
+            m = re.match(r"^Exec=(.*)$", line.strip())
+            if m:
+                toks = [t for t in m.group(1).split() if not t.startswith("%") and "=" not in t.split("/")[0]]
+                toks = [t for t in toks if t not in ("env", "latte-net", "latte-sandbox", "exec", "--", "run") and not t.startswith("-")]
+                if toks:
+                    names.add(os.path.basename(toks[0]).lower())
+    return names
+
+
+def adopt(app):
+    """Bežiace natívne procesy aplikácie (aj potomkov) presunie do vlastného scope, aby ich latte-netd zasiahol."""
+    names, me = exec_names(app), os.getuid()
+    roots = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + d).st_uid != me:
+                continue
+            cg = open("/proc/%s/cgroup" % d).read()
+            if "/app-flatpak-" in cg or "/app-latte-" in cg:
+                continue
+            exe = os.path.basename(os.readlink("/proc/%s/exe" % d)).lower()
+            comm = open("/proc/%s/comm" % d).read().strip().lower()
+        except OSError:
+            continue
+        if exe in names or comm in names:
+            roots.append(d)
+    if not roots:
+        return 0
+    pids = sorted({int(p) for r in roots for p in descendants(r)})
+    unit = "app-latte-%s-%d.scope" % (re.sub(r"[^A-Za-z0-9:_.]", "_", app), pids[0])
+    r = subprocess.run(["busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+                        "StartTransientUnit", "ssa(sv)a(sa(sv))", unit, "fail", "2", "PIDs", "au", str(len(pids))] + [str(p) for p in pids] +
+                       ["Description", "s", "LatteOS NET: " + app, "0"], capture_output=True, text=True)
+    if r.returncode:
+        print("latte-net: scope sa nepodaril: " + r.stderr.strip(), file=sys.stderr)
+    return len(pids)
+
+
+def plan_denied(app):
+    try:
+        with open(os.path.join(PLANS, app + ".json")) as f:
+            return set(json.load(f).get("denied", []))
+    except (OSError, ValueError):
+        return set()
+
+
+def set_native(app, net_on):
+    """NET natívnej aplikácie = položka shared:network v jej Setup Plane (jeden obal, žiadne vnáranie bwrap)."""
+    d = plan_denied(app)
+    (d.discard if net_on else d.add)("shared:network")
+    return subprocess.call(["latte-apps", "plan-apply", app, json.dumps(sorted(d))])
+
+
+def status(app):
+    if app in offlist():
+        return "off"
+    if is_flatpak(app):
+        r = subprocess.run(["flatpak", "override", "--user", "--show", app], capture_output=True, text=True)
+        return "off" if re.search(r"^shared=.*!network", r.stdout, re.M) else "on"
+    if "shared:network" in plan_denied(app):
+        return "off"
+    p = override_path(app)
+    try:
+        return "off" if MARK in open(p, encoding="utf-8").read() else "on"
+    except OSError:
+        return "on"
+
+
+def set_off(app):
+    set_offlist(app, True)                  # okamžite: latte-netd odreže bežiacu aplikáciu
+    if is_flatpak(app):
+        return subprocess.call(["flatpak", "override", "--user", "--unshare=network", app])
+    adopt(app)
+    if shutil.which("latte-sandbox") and shutil.which("latte-apps"):
+        return set_native(app, False)
+    src = find_desktop(app)
+    if not src:
+        print("aplikácia sa nenašla: " + app, file=sys.stderr)
+        return 1
+    out = []
+    for line in open(src, encoding="utf-8", errors="replace"):
+        m = re.match(r"^(TryExec|Exec)=(.*)$", line.rstrip("\n"))
+        if m and m.group(1) == "Exec" and "latte-net exec" not in m.group(2):
+            line = "Exec=latte-net exec -- " + m.group(2) + "\n"
+        elif m and m.group(1) == "TryExec":
+            continue
+        out.append(line)
+        if line.strip() == "[Desktop Entry]":
+            out.append(MARK + "\n")
+    os.makedirs(USER_APPS, exist_ok=True)
+    with open(override_path(app), "w", encoding="utf-8") as f:
+        f.writelines(out)
+    subprocess.call(["update-desktop-database", USER_APPS], stderr=subprocess.DEVNULL)
+    return 0
+
+
+def set_on(app):
+    set_offlist(app, False)
+    if is_flatpak(app):
+        return subprocess.call(["flatpak", "override", "--user", "--share=network", app])
+    if shutil.which("latte-sandbox") and shutil.which("latte-apps"):
+        return set_native(app, True)
+    p = override_path(app)
+    try:
+        if MARK in open(p, encoding="utf-8").read():   # zmazať iba naše prekrytie, nie vlastné súbory používateľa
+            os.remove(p)
+            subprocess.call(["update-desktop-database", USER_APPS], stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+    return 0
+
+
+def descendants(root):
+    kids = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                ppid = open("/proc/%s/stat" % d).read().rsplit(")", 1)[1].split()[1]
+            except (OSError, IndexError):
+                continue
+            kids.setdefault(ppid, []).append(d)
+    out, todo = [], [str(root)]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo.extend(kids.get(p, []))
+    return out
+
+
+def used(root):
+    """Tlačidlo NET sa ukáže až vtedy, keď aplikácia naozaj otvorí spojenie von (nie iba na lo)."""
+    inodes = set()
+    for p in descendants(root):
+        try:
+            for fd in os.listdir("/proc/%s/fd" % p):
+                try:
+                    t = os.readlink("/proc/%s/fd/%s" % (p, fd))
+                except OSError:
+                    continue
+                if t.startswith("socket:["):
+                    inodes.add(t[8:-1])
+        except OSError:
+            continue
+    if not inodes:
+        return False
+    for name in ("tcp", "tcp6", "udp", "udp6"):
+        try:
+            rows = open("/proc/net/" + name).read().splitlines()[1:]
+        except OSError:
+            continue
+        for r in rows:
+            f = r.split()
+            if len(f) < 10 or f[9] not in inodes:
+                continue
+            addr, port = f[2].split(":")
+            if int(port, 16) == 0 or set(addr) == {"0"}:
+                continue                                   # nepripojený / počúvajúci soket
+            if addr in ("0100007F", "00000000000000000000000001000000") or addr.endswith("0100007F") and len(addr) == 32 and addr.startswith("0000000000000000FFFF0000"):
+                continue                                   # 127.0.0.1, ::1, ::ffff:127.0.0.1
+            return True
+    return False
+
+
+def main(a):
+    if len(a) == 2 and a[0] == "used" and a[1].isdigit():
+        print(1 if used(int(a[1])) else 0)
+        return 0
+    if len(a) >= 2 and a[0] == "exec":
+        cmd = a[2:] if a[1] == "--" else a[1:]
+        if not cmd:
+            return 2
+        if not shutil.which("bwrap"):
+            print("latte-net: chýba bubblewrap, spúšťam so sieťou", file=sys.stderr)
+            os.execvp(cmd[0], cmd)
+        os.execvp("bwrap", ["bwrap", "--dev-bind", "/", "/", "--unshare-net", "--die-with-parent", "--"] + cmd)
+    if len(a) == 2 and a[0] in ("status", "on", "off", "resolve"):
+        a = [a[0], resolve(a[1])]
+        if a[0] == "resolve":
+            print(a[1])
+            return 0
+        if a[0] == "status":
+            print(status(a[1]))
+            return 0
+        return set_off(a[1]) if a[0] == "off" else set_on(a[1])
+    if a[:1] == ["list"]:
+        for p in sorted(glob.glob(USER_APPS + "/*.desktop")):
+            try:
+                if MARK in open(p, encoding="utf-8").read():
+                    print(os.path.basename(p)[:-8])
+            except OSError:
+                pass
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

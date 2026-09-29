@@ -1,0 +1,8 @@
+#!/bin/sh
+# latte-kapsa-store — uloží obsah schránky do histórie Kapsy (volá wl-paste --watch pri každej zmene schránky).
+# Nastavenia › Systém › Schránka: ~/.config/latteos/kapsa-historia = off → nič neukladá (ako Windows „História
+# schránky“ vypnutá), ~/.config/latteos/kapsa-max = najviac položiek (predvolene 200).
+c="${XDG_CONFIG_HOME:-$HOME/.config}/latteos"
+[ "$(cat "$c/kapsa-historia" 2>/dev/null)" = off ] && { cat >/dev/null; exit 0; }
+max=$(cat "$c/kapsa-max" 2>/dev/null | tr -cd '0-9'); [ -n "$max" ] || max=200
+exec cliphist -max-items "$max" store

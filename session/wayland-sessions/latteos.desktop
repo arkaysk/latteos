@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=LatteOS
+Comment=LatteOS — režim vybraný pri štarte (NORMAL: Hyprland + Noctalia)
+Exec=/usr/bin/latte-session
+Type=Application
+DesktopNames=Hyprland

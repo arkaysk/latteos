@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Rubín
+desc = Fazety · iskrenie pri pohybe myši · okno sa rozpadne na fazety
+mode = dark
+palette = LatteRubin
+material = fazety
+effects = plne
+border_active = FF96AA
+border_inactive = 7D0F24
+wallpaper = 

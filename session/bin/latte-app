@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# latte-app <meno> — spustí aplikáciu LatteOS (Quickshell QML v /usr/share/latteos/apps/<meno>.qml).
+#   latte-app subory [priečinok] · nastavenia [stránka] · monitor [prehlad|procesy|autorun|telemetria]
+# Vo VM (stupeň Softvér/SAFE) kreslí Qt softvérovo bez GL — lacnejšie a bez pádov llvmpipe.
+app="${1:?použitie: latte-app <subory|nastavenia|monitor> [argumenty]}"; shift
+qml="/usr/share/latteos/apps/$app.qml"
+[ -f "$qml" ] || { echo "neznáma aplikácia: $app"; exit 1; }
+case "${LATTE_TIER:-softver}" in softver|safe|minimalny) export QT_QUICK_BACKEND=software ;; esac
+export LATTE_APP_ARGS="$*"
+export LATTE_APP_ARGV="$(printf '%s\n' "$@")"     # jednotlivé argumenty po riadkoch (cesty s medzerami)
+export QS_ICON_THEME="${QS_ICON_THEME:-breeze}"      # ikony súborov (mime) a aplikácií; Breeze je v obraze
+exec qs -n -p "$qml"

@@ -1,0 +1,28 @@
+{
+ "name": "Latte mačka",
+ "profile": "macka",
+ "flyer": false,
+ "facing": "left",
+ "scale": 1.2,
+ "about": "skáče, plíži sa, uhýba kurzoru; keď sa dlho nič nedeje, priblíži sa a pozerá na teba",
+ "idle": [
+  "sedi",
+  "sedi",
+  "zmurk"
+ ],
+ "sleep": "spi",
+ "move": [
+  "chodza-1",
+  "chodza-2"
+ ],
+ "frames": [
+  "chodza-1",
+  "chodza-2",
+  "plazi",
+  "sedi",
+  "skok",
+  "spi",
+  "zmurk",
+  "hero"
+ ]
+}

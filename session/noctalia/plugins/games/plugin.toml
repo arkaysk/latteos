@@ -1,0 +1,21 @@
+# LatteOS — Herňa (Super+G): nainštalované hry zo Steamu a Heroicu (Epic, GOG, Amazon) na jednom mieste.
+# Klik spustí hru v hernom režime (latte-games play: bez efektov a medzier, po hre späť).
+
+id          = "latteos/games"
+name        = "LatteOS Herňa"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "games"]
+icon        = "device-gamepad-2"
+description = "Herná knižnica: Steam a Heroic, spustenie v hernom režime."
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 920
+height    = 600
+placement = "floating"
+position  = "center"

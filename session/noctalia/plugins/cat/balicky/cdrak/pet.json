@@ -1,0 +1,25 @@
+{
+ "name": "Dráčik",
+ "about": "skáče, lieta a hrá sa s predmetmi",
+ "profile": "drak",
+ "flyer": true,
+ "facing": "none",
+ "idle": [
+  "sedi",
+  "sedi-2"
+ ],
+ "sleep": "spi",
+ "move": [
+  "leti",
+  "leti-2"
+ ],
+ "frames": [
+  "hero",
+  "leti",
+  "leti-2",
+  "ohen",
+  "sedi",
+  "sedi-2",
+  "spi"
+ ]
+}

@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Biely onyx
+desc = Priesvitný biely kameň so žilkovaním · profesionálny svetlý vzhľad
+mode = light
+palette = LatteBielyOnyx
+material = kamen
+effects = jemne
+border_active = 8C7B6B
+border_inactive = CFC6BB
+wallpaper = 

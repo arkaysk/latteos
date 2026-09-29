@@ -1,0 +1,138 @@
+#!/usr/bin/python3
+"""latte-otvor — „Otvoriť v…“ pre Súbory: aplikácie pre typ súboru s odporúčaniami LatteOS a App Managera.
+
+  latte-otvor aplikacie SÚBOR          riadky: stav<TAB>id<TAB>názov   (stav: predvolena | odporucana | ina | nainstalovat)
+                                       prvý riadok: mime<TAB>typ súboru
+  latte-otvor spusti ID SÚBOR          otvorí súbor v aplikácii ID (.desktop bez prípony)
+  latte-otvor predvolena ID SÚBOR      nastaví ID ako predvolenú pre tento typ (xdg-mime) a otvorí
+
+„nainstalovat“ = odporúčaná aplikácia z katalógu App Managera, ktorá ešte nie je nainštalovaná
+(id je Flatpak, Súbory ponúknu inštaláciu cez App Manager).
+"""
+import configparser, glob, os, subprocess, sys
+
+HOME = os.path.expanduser("~")
+DIRS = [HOME + "/.local/share/applications", HOME + "/.local/share/flatpak/exports/share/applications",
+        "/var/lib/flatpak/exports/share/applications", "/usr/share/applications"]
+
+# odporúčania LatteOS podľa typu (predpona mime → aplikácie v poradí; Flatpak id = z katalógu App Managera)
+RECOMMEND = [
+    ("application/pdf", ["org.gnome.Papers", "latteos-heidelberg", "org.mozilla.firefox"]),
+    ("application/vnd.openxmlformats-officedocument.wordprocessingml", ["latteos-heidelberg", "org.libreoffice.LibreOffice"]),
+    ("application/vnd.oasis.opendocument.text", ["latteos-heidelberg", "org.libreoffice.LibreOffice"]),
+    ("application/msword", ["org.libreoffice.LibreOffice", "latteos-heidelberg"]),
+    ("application/vnd.openxmlformats-officedocument.spreadsheetml", ["org.libreoffice.LibreOffice"]),
+    ("application/vnd.oasis.opendocument.spreadsheet", ["org.libreoffice.LibreOffice"]),
+    ("application/vnd.openxmlformats-officedocument.presentationml", ["org.libreoffice.LibreOffice"]),
+    ("application/rtf", ["latteos-heidelberg", "org.libreoffice.LibreOffice"]),
+    ("application/epub", ["latteos-heidelberg"]),
+    ("text/markdown", ["latteos-heidelberg"]),
+    ("text/html", ["org.mozilla.firefox", "latteos-heidelberg"]),
+    ("text/", ["latteos-heidelberg"]),
+    ("image/", ["org.gimp.GIMP", "org.kde.krita", "org.mozilla.firefox"]),
+    ("video/", ["org.videolan.VLC"]),
+    ("audio/", ["org.videolan.VLC"]),
+    ("application/x-rpm", ["latteos-aplikacie"]),
+    ("application/vnd.flatpak", ["latteos-aplikacie"]),
+    ("inode/directory", ["latteos-subory"]),
+]
+
+
+def desktop_path(app):
+    for d in DIRS:
+        p = os.path.join(d, app + ".desktop")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def entry(p):
+    c = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        c.read(p, encoding="utf-8")
+        e = c["Desktop Entry"]
+    except (configparser.Error, KeyError, UnicodeDecodeError):
+        return None
+    if e.get("NoDisplay", "false") == "true" or e.get("Hidden", "false") == "true" or e.get("Type", "") != "Application":
+        return None
+    return {"name": e.get("Name[sk]") or e.get("Name") or os.path.basename(p)[:-8], "mime": [m for m in e.get("MimeType", "").split(";") if m]}
+
+
+def mime_of(path):
+    if os.path.isdir(path):
+        return "inode/directory"
+    r = subprocess.run(["xdg-mime", "query", "filetype", path], capture_output=True, text=True)
+    m = r.stdout.strip() or "application/octet-stream"
+    # xdg-mime nepozná .md → text/plain; Súbory chcú Markdown
+    if path.lower().endswith((".md", ".markdown")):
+        m = "text/markdown"
+    return m
+
+
+def describe(m):
+    names = {"inode/directory": "Priečinok", "application/pdf": "PDF dokument", "text/markdown": "Markdown", "text/plain": "Text"}
+    major = {"image": "Obrázok", "video": "Video", "audio": "Zvuk", "text": "Text", "font": "Písmo"}
+    sub = m.split("/")[-1].replace("x-", "").split(".")[-1].split("+")[0].upper()
+    return names.get(m) or (major.get(m.split("/")[0], "Súbor") + " " + sub)
+
+
+def apps_for(path):
+    m = mime_of(path)
+    default = subprocess.run(["xdg-mime", "query", "default", m], capture_output=True, text=True).stdout.strip()[:-8] if m else ""
+    seen, out = set(), []
+    rec = []
+    for prefix, ids in RECOMMEND:
+        if m.startswith(prefix):
+            rec = ids
+            break
+
+    def add(state, app, name):
+        if app not in seen:
+            seen.add(app)
+            out.append((state, app, name))
+
+    if default and desktop_path(default):
+        e = entry(desktop_path(default))
+        if e:
+            add("predvolena", default, e["name"])
+    for app in rec:
+        p = desktop_path(app)
+        if p:
+            e = entry(p)
+            if e:
+                add("odporucana", app, e["name"])
+    # všetky nainštalované, ktoré sa k typu hlásia (MimeType), aj všeobecné (text/* → text/plain)
+    major = m.split("/")[0]
+    for d in DIRS:
+        for p in sorted(glob.glob(d + "/*.desktop")):
+            e = entry(p)
+            if e and (m in e["mime"] or (major == "text" and "text/plain" in e["mime"])):
+                add("ina", os.path.basename(p)[:-8], e["name"])
+    for app in rec:                       # odporúčané z App Managera, ktoré ešte nie sú nainštalované
+        if app not in seen and "." in app:
+            n = app.split(".")[-1]
+            add("nainstalovat", app, n[:1].upper() + n[1:])
+    return m, out
+
+
+def main(a):
+    if len(a) == 2 and a[0] == "aplikacie":
+        m, apps = apps_for(a[1])
+        print(m + "\t" + describe(m))
+        for s, app, name in apps:
+            print(s + "\t" + app + "\t" + name)
+        return 0
+    if len(a) == 3 and a[0] in ("spusti", "predvolena"):
+        p = desktop_path(a[1])
+        if not p:
+            print("latte-otvor: aplikácia sa nenašla: " + a[1], file=sys.stderr)
+            return 1
+        if a[0] == "predvolena":
+            subprocess.run(["xdg-mime", "default", a[1] + ".desktop", mime_of(a[2])])
+        return subprocess.call(["gio", "launch", p, a[2]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

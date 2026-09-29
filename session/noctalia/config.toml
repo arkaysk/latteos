@@ -1,0 +1,244 @@
+# LatteOS — predvolená konfigurácia Noctalie (/usr/share/latteos/noctalia/config.toml).
+# latte-session nastaví NOCTALIA_CONFIG_HOME=/usr/share/latteos, ak používateľ nemá vlastný
+# ~/.config/noctalia/config.toml. Zmeny z Nastavení (GUI) ukladá Noctalia do
+# ~/.local/state/noctalia/settings.toml, takže tento súbor ostáva nemenný základ.
+#
+# Vzhľad podľa inspo/LatteOS – návrh plochy: jedna spodná lišta z oddelených ostrovov, teplé
+# tmavé sklo, akcent karamel. Paleta: palettes/Latte.json.
+
+[theme]
+mode           = "dark"
+source         = "custom"
+custom_palette = "Latte"
+
+# farby GTK 3/4 (zenity, portálový dialóg súborov vo Firefoxe, GTK aplikácie) podľa témy a svetlej/tmavej verzie:
+# vstavané šablóny Noctalie zapíšu ~/.config/gtk-{3,4}.0/noctalia.css a import v gtk.css, tému adw-gtk3(-dark)
+[theme.templates]
+builtin_ids = ["gtk3", "gtk4"]
+
+[shell]
+font_family         = "Manrope"
+corner_radius_scale = 1.15
+time_format         = "{:%H:%M}"
+date_format         = "%a %-d. %-m."
+telemetry_enabled   = false
+offline_mode        = false
+lang                = "sk"
+
+# poloha pre automatický svetlý/tmavý režim (latte-theme mode auto), nočné svetlo a počasie.
+# Predvolene stred Slovenska bez zisťovania z IP; zmena: Nastavenia › Systém › Dátum a čas.
+[location]
+auto_locate = false
+latitude    = 48.74
+longitude   = 19.15
+
+[shell.animation]
+enabled = true
+speed   = 1.0
+
+[shell.shadow]
+direction = "down"
+alpha     = 0.35
+
+[shell.panel]
+transparency_mode        = "soft"
+borders                  = true
+shadow                   = true
+launcher_placement       = "floating"
+launcher_position        = "auto"     # z ostrova vyhľadávania (tvar L)
+clipboard_placement      = "floating"
+control_center_placement = "attached"
+# LatteOS fork (latte-shell): panel otvorený z ostrova vyrastie z neho v tvare L — medzera nad lištou ako okná,
+# „krk“ v šírke ostrova, vyduté rohy (pôvodná Noctalia túto voľbu iba ohlási ako neznámu)
+island_panels            = true
+floating_offset          = 10
+
+# ── Lišta: ostrovy zľava doprava ───────────────────────────────────────────────
+# Aplikácie · Čas, oznámenia, dátum · Systém+páska · Hľadanie+Kapsa · Maskot · Súbory+zariadenia
+[bar.main]
+position           = "bottom"
+thickness          = 56
+background_opacity = 0.0          # lišta sama je neviditeľná, vidieť len ostrovy (oddelené, s menšími medzerami)
+radius             = 16
+margin_ends        = 12
+margin_edge        = 10
+padding            = 0
+widget_spacing     = 6
+shadow             = true
+reserve_space      = true
+capsule            = true
+capsule_radius     = 16
+capsule_fill       = "surface_variant"
+capsule_opacity    = 0.92
+capsule_border     = "outline"
+capsule_padding    = 8
+font_scale         = 1.05
+
+# hľadanie ide hneď za okná: s pribúdajúcimi oknami sa plynulo posúva doprava až ku Kapse a potom sa zužuje
+# (textbar si šírku počíta z počtu okien, najviac na polovicu) — zadanie 25. 9.
+start  = ["group:apps", "group:time", "group:system", "group:search"]
+center = []
+end    = ["group:kapsa", "latte-cat", "group:subory", "group:dash", "group:devices", "group:dev"]
+
+[[bar.main.capsule_group]]
+id      = "apps"
+members = ["latte-apps"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "time"
+members = ["latte-time", "latte-bell", "latte-date", "weather"]    # počasie za dátumom (poloha z [location])
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "system"
+members = ["latte-cup", "latte-okna"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "subory"                 # Súbory výrazne ako šálka (zadanie 25. 9.)
+members = ["latte-subory"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "dev"                    # pravý roh = zrkadlo dlaždice aplikácií (textúra, klik = Zariadenia v tvare L)
+members = ["latte-dev"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "kapsa"                  # Kapsa v rovnakom ostrove (výška a tvar) ako ostatné položky
+members = ["latte-kapsa"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "search"
+members = ["textbar"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "dash"                   # dashboard Noctalie: malé úzke tlačidlo, kým sa nerozhodne, či ostane (zadanie 26. 9.)
+members = ["latte-dash"]
+enabled = true
+
+[[bar.main.capsule_group]]
+id      = "devices"
+members = ["latte-senzory"]        # iba keď niečo ukazuje: senzory z Monitora
+# mikrofón a kameru v použití ukazuje rohová dlaždica Správcu zariadení (zadanie 26. 9.), latte-sukromie tu už nie je
+# sieť, hlasitosť a batéria Noctalie sú preč (zadanie 26. 9.): Wi-Fi a batériu ukazuje rohová dlaždica Správcu zariadení
+enabled = true
+
+# ── Widgety ────────────────────────────────────────────────────────────────────
+[widget.launcher]
+glyph = "apps"
+
+# široká dlaždica aplikácií s pokojnou textúrou (plugin latteos/apps); klik = spúšťač, pravý klik = App Manager
+[widget.latte-apps]
+type = "latteos/apps:tile"
+
+[widget.clock]
+format         = "{:%H:%M}"
+tooltip_format = "{:%A, %-d. %B %Y}"
+
+# ostrov Čas (plugin latteos/time): hodiny (pásma, stopky, budík, minútka) · zvonček s počtom nových
+# oznámení (pravý klik = Nerušiť) · dátum s počtom úloh „št 24. 9. (3)“ (kalendár a úlohy)
+[widget.latte-time]
+type = "latteos/time:clock"
+
+[widget.weather]
+show_condition   = false         # ikona počasia + teplota (popis v bubline)
+show_temperature = true
+
+[widget.latte-bell]
+type = "latteos/time:bell"
+
+[widget.latte-date]
+type = "latteos/time:date"
+
+# šálka Latte = systémové menu LatteOS (plugin latteos/system); riadiace centrum ostáva v ostrove zariadení
+[widget.latte-cup]
+type = "latteos/system:cup"
+
+[widget.latte-subory]
+type = "latteos/system:subory"
+
+# Zariadenia = riadiace centrum LatteOS (plugin latteos/devices); riadiace centrum Noctalie: Super+A
+[widget.latte-dev]
+type = "latteos/devices:dev"
+
+# indikátor súkromia (plugin latteos/devices): červená kapsula, kým aplikácia používa mikrofón alebo kameru
+[widget.latte-sukromie]
+type = "latteos/devices:sukromie"
+
+# dashboard Noctalie (riadiace centrum, Super+A) ako úzke tlačidlo (plugin latteos/devices)
+[widget.latte-dash]
+type = "latteos/devices:dash"
+
+# senzory na lište (plugin latteos/devices): hodnoty vybrané v Monitore › Senzory
+[widget.latte-senzory]
+type = "latteos/devices:senzory"
+
+[widget.control-center]
+custom_image = "/usr/share/latteos/noctalia/icons/latte-cup.png"
+
+# ovál okien (plugin latteos/okna): ikony otvorených okien, náhľad, pravý klik = ponuka okna
+[widget.latte-okna]
+type = "latteos/okna:oval"
+
+[widget.workspaces]
+style        = "regular"
+show_labels  = false
+focused_color = "primary"
+
+# Text Bar: režimy Lokálne / Web / AI / Linux príkaz (plugin latteos/textbar)
+[widget.textbar]
+type = "latteos/textbar:bar"
+
+# maskot LatteOS (plugin latteos/cat): ťuká do rytmu hudby, v noci spí; pravý klik = iný maskot
+[widget.latte-cat]
+type = "latteos/cat:mascot"
+
+# Kapsa = schránka LatteOS (plugin latteos/kapsa, história cez cliphist); nahrádza widget clipboard Noctalie
+[widget.latte-kapsa]
+type = "latteos/kapsa:pocket"
+capsule = false          # vlastný široký kontajner s výrezom a slotmi (náčrt 24. 9.); vedľa hľadania = stála poloha
+
+[widget.files]
+type  = "custom_button"
+glyph = "folder"
+[widget.files.actions]
+left = "exec latte-app subory"
+
+# tapety LatteOS (/usr/share/backgrounds/latteos); vo VM iba jednoduchý prechod (každý efekt stojí CPU)
+[wallpaper]
+enabled             = true
+fill_mode           = "crop"
+directory           = "/usr/share/backgrounds/latteos"
+transition          = ["fade"]
+transition_duration = 600
+
+[wallpaper.default]
+path = "/usr/share/backgrounds/latteos/latteos-wallpaper2.jpg"
+
+# pokoj (optimalizácia 26. 9.): kým je obrazovka zamknutá, animácie lišty a GIF stoja — pod zámkom ich nikto nevidí,
+# a pri softvérovom kreslení stojí každá snímka kompozitor celé prekreslenie. Príznak číta GifZdroj (inotify) a dlaždice.
+[hooks]
+started          = 'rm -f "$XDG_RUNTIME_DIR/latteos/pokoj"'
+session_locked   = 'mkdir -p "$XDG_RUNTIME_DIR/latteos" && touch "$XDG_RUNTIME_DIR/latteos/pokoj"'
+session_unlocked = 'rm -f "$XDG_RUNTIME_DIR/latteos/pokoj"'
+
+# pluginy LatteOS (/usr/share/latteos/noctalia/plugins/<plugin>/plugin.toml)
+[plugins]
+enabled     = ["latteos/system", "latteos/textbar", "latteos/devices", "latteos/time", "latteos/apps", "latteos/cat", "latteos/overview", "latteos/kapsa", "latteos/ai", "latteos/snap", "latteos/games", "latteos/okna"]
+auto_update = "none"
+
+[[plugins.source]]
+name     = "latteos"
+kind     = "path"
+location = "/usr/share/latteos/noctalia/plugins"
+enabled  = true
+
+[dock]
+enabled = false
+
+[desktop_widgets]
+enabled = false

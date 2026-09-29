@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+# LatteOS — kernel-install plugin: ku každému kernelu pridá do GRUB-u (BLS) dve položky SAFE:
+#   „LatteOS SAFE“                          latte.mode=safe
+#   „LatteOS SAFE — bez ovládača grafiky“   latte.mode=safe nomodeset   (simpledrm, posledná záchrana)
+# Inštaluje sa do /etc/kernel/install.d/. Ručne: 96-latteos-safe.install add <verzia>
+COMMAND="$1"
+KERNEL_VERSION="$2"
+dir=/boot/loader/entries
+mid="$(cat /etc/machine-id 2>/dev/null)"
+src="$dir/$mid-$KERNEL_VERSION.conf"
+
+case "$COMMAND" in
+add)
+    [ -f "$src" ] || { echo "latteos-safe: $src neexistuje, preskakujem" >&2; exit 0; }
+    make() { # suffix title-suffix extra-options
+        # verzia s "~" sa v GRUB-e zoradí hneď pod bežný kernel; predvolená položka (saved_entry) sa nemení
+        sed -e "s|^title .*|title LatteOS SAFE$2 ($KERNEL_VERSION)|" \
+            -e "s|^version .*|version $KERNEL_VERSION~latte$1|" \
+            -e "s|^options \(.*\)|options \1 latte.mode=safe$3|" \
+            -e 's|  *| |g' \
+            "$src" > "$dir/$mid-$KERNEL_VERSION-latte$1.conf"
+    }
+    make safe "" ""
+    make safe-nomodeset " — bez ovládača grafiky" " nomodeset"
+    ;;
+remove)
+    rm -f "$dir/$mid-$KERNEL_VERSION-lattesafe.conf" "$dir/$mid-$KERNEL_VERSION-lattesafe-nomodeset.conf"
+    ;;
+esac
+exit 0

@@ -1,0 +1,9 @@
+#!/bin/sh
+# latte-sukromie — kto práve používa mikrofón alebo kameru (riadky „mic|camera<TAB>aplikácia“, ako latte-sysmon sukromie).
+# Rýchla cesta (optimalizácia 26. 9.): väčšinu času nikto — to zistí pactl a fuser za pár ms. Úplné hľadanie
+# s menami aplikácií (latte-sysmon, Python, prechádza všetky procesy, ~0,1 s CPU) iba keď niečo nájdu.
+mic=$(pactl list short source-outputs 2>/dev/null | grep -v '\.monitor' | head -1)
+cam=""
+for v in /dev/video*; do [ -e "$v" ] && fuser -s "$v" 2>/dev/null && { cam=1; break; }; done
+[ -z "$mic" ] && [ -z "$cam" ] && exit 0
+exec latte-sysmon sukromie

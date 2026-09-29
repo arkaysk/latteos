@@ -1,0 +1,188 @@
+diff --git a/hyprbars/barDeco.cpp b/hyprbars/barDeco.cpp
+index c27653d..b834a16 100644
+--- a/hyprbars/barDeco.cpp
++++ b/hyprbars/barDeco.cpp
+@@ -1,3 +1,4 @@
++#include <linux/input-event-codes.h>
+ #include "barDeco.hpp"
+ 
+ #include <hyprland/src/Compositor.hpp>
+@@ -10,6 +11,7 @@
+ #include <hyprland/src/helpers/MiscFunctions.hpp>
+ #include <hyprland/src/managers/SeatManager.hpp>
+ #include <hyprland/src/managers/input/InputManager.hpp>
++#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+ #include <hyprland/src/render/Renderer.hpp>
+ #include <hyprland/src/config/ConfigManager.hpp>
+ #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
+@@ -55,6 +57,10 @@ CHyprBar::CHyprBar(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
+ }
+ 
+ CHyprBar::~CHyprBar() {
++    if (m_hoverTimer) {
++        m_hoverTimer->cancel();
++        g_pEventLoopManager->removeTimer(m_hoverTimer);
++    }
+     std::erase(g_pGlobalState->bars, m_self);
+ }
+ 
+@@ -126,6 +132,32 @@ void CHyprBar::onMouseButton(Event::SCallbackInfo& info, IPointer::SButtonEvent
+     if (!inputIsValid())
+         return;
+ 
++    // LatteOS: tlačidlá –□✕, ťahanie a dvojklik iba ľavým tlačidlom (ako Windows); pravý klik na titulok = ponuka okna
++    // (on_right_click), stredný nerobí nič. Kliky mimo titulku idú aplikácii bez zmeny.
++    if (e.button != BTN_LEFT) {
++        const auto COORDS = cursorRelativeToBar();
++        if (!VECINRECT(COORDS, 0, 0, assignedBoxGlobal().w, g_pGlobalState->config.barHeight->value() - 1))
++            return;
++        info.cancelled = true;
++        const auto PWINDOW = m_pWindow.lock();
++        const auto ON_RIGHT_CLICK = g_pGlobalState->config.onRightClick->value();
++        if (e.button == BTN_RIGHT && e.state == WL_POINTER_BUTTON_STATE_PRESSED && PWINDOW && !ON_RIGHT_CLICK.empty()) {
++            if (Desktop::focusState()->window() != PWINDOW)
++                Desktop::focusState()->fullWindowFocus(PWINDOW, Desktop::FOCUS_REASON_CLICK);
++            const auto  MOUSE = g_pInputManager->getMouseCoordsInternal();
++            std::string cmd   = ON_RIGHT_CLICK;
++            auto        repl  = [&cmd](const std::string& k, const std::string& v) {
++                for (size_t pos = cmd.find(k); pos != std::string::npos; pos = cmd.find(k, pos + v.size()))
++                    cmd.replace(pos, k.size(), v);
++            };
++            repl("{x}", std::to_string((int)MOUSE.x));
++            repl("{y}", std::to_string((int)MOUSE.y));
++            repl("{address}", std::format("0x{:x}", (uintptr_t)PWINDOW.get()));
++            Config::Supplementary::executor()->spawn(cmd);
++        }
++        return;
++    }
++
+     if (e.state != WL_POINTER_BUTTON_STATE_PRESSED) {
+         handleUpEvent(info);
+         return;
+@@ -154,6 +186,8 @@ void CHyprBar::onMouseMove(Vector2D coords) {
+     if (g_pGlobalState->config.iconOnHover->value())
+         damageOnButtonHover();
+ 
++    updateButtonHoverTimer();
++
+     if (!m_bDragPending || m_bTouchEv || !validMapped(m_pWindow) || m_touchId != 0)
+         return;
+ 
+@@ -664,6 +698,57 @@ void CHyprBar::updateRules() {
+         m_bTitleColorChanged = true;
+ }
+ 
++// LatteOS: kurzor podržaný 0,7 s nad tlačidlom → on_button_hover ({index} = poradie tlačidla od kraja, ako add_button)
++void CHyprBar::updateButtonHoverTimer() {
++    const auto CMD = g_pGlobalState->config.onButtonHover->value();
++    int        idx = -1;
++    if (!CMD.empty() && validMapped(m_pWindow) && !m_bDraggingThis) {
++        const auto BARPADDING       = g_pGlobalState->config.barPadding->value();
++        const auto BARBUTTONPADDING = g_pGlobalState->config.barButtonPadding->value();
++        const auto HEIGHT           = g_pGlobalState->config.barHeight->value();
++        const bool BUTTONSRIGHT     = g_pGlobalState->config.barButtonsAlignment->value() != "left";
++        const auto COORDS           = cursorRelativeToBar();
++        float      offset           = BARPADDING;
++        int        i                = 0;
++        for (auto& b : g_pGlobalState->buttons) {
++            const auto BARBUF = Vector2D{(int)assignedBoxGlobal().w, HEIGHT};
++            const auto POS    = Vector2D{(BUTTONSRIGHT ? BARBUF.x - BARBUTTONPADDING - b.size - offset : offset), (BARBUF.y - b.size) / 2.0}.floor();
++            if (VECINRECT(COORDS, POS.x, POS.y, POS.x + b.size + BARBUTTONPADDING, POS.y + b.size)) {
++                idx = i;
++                break;
++            }
++            offset += BARBUTTONPADDING + b.size;
++            i++;
++        }
++    }
++    if (idx == m_hoverIdx)
++        return;
++    m_hoverIdx = idx;
++    if (!m_hoverTimer) {
++        m_hoverTimer = makeShared<CEventLoopTimer>(std::nullopt, [this](SP<CEventLoopTimer> self, void*) {
++            const auto PWINDOW = m_pWindow.lock();
++            if (m_hoverIdx < 0 || !PWINDOW)
++                return;
++            const auto  MOUSE = g_pInputManager->getMouseCoordsInternal();
++            std::string cmd   = g_pGlobalState->config.onButtonHover->value();
++            auto        repl  = [&cmd](const std::string& k, const std::string& v) {
++                for (size_t pos = cmd.find(k); pos != std::string::npos; pos = cmd.find(k, pos + v.size()))
++                    cmd.replace(pos, k.size(), v);
++            };
++            repl("{index}", std::to_string(m_hoverIdx));
++            repl("{x}", std::to_string((int)MOUSE.x));
++            repl("{y}", std::to_string((int)MOUSE.y));
++            repl("{address}", std::format("0x{:x}", (uintptr_t)PWINDOW.get()));
++            Config::Supplementary::executor()->spawn(cmd);
++        }, nullptr);
++        g_pEventLoopManager->addTimer(m_hoverTimer);
++    }
++    if (idx >= 0)
++        m_hoverTimer->updateTimeout(std::chrono::milliseconds(700));
++    else
++        m_hoverTimer->updateTimeout(std::nullopt);
++}
++
+ void CHyprBar::damageOnButtonHover() {
+     const auto BARPADDING       = g_pGlobalState->config.barPadding->value();
+     const auto BARBUTTONPADDING = g_pGlobalState->config.barButtonPadding->value();
+diff --git a/hyprbars/barDeco.hpp b/hyprbars/barDeco.hpp
+index a3b4e2d..093531c 100644
+--- a/hyprbars/barDeco.hpp
++++ b/hyprbars/barDeco.hpp
+@@ -12,6 +12,7 @@
+ #include <hyprland/src/helpers/time/Time.hpp>
+ #include <hyprland/src/helpers/signal/Signal.hpp>
+ #include "globals.hpp"
++#include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
+ 
+ #define private public
+ #include <hyprland/src/managers/input/InputManager.hpp>
+@@ -66,6 +67,10 @@ class CHyprBar : public IHyprWindowDecoration {
+     bool                       m_hidden             = false;
+     bool                       m_bTitleColorChanged = false;
+     bool                       m_bButtonHovered     = false;
++    // LatteOS: podržanie myši nad tlačidlom (on_button_hover, napr. rozloženia nad □ ako Windows 11)
++    SP<CEventLoopTimer>        m_hoverTimer;
++    int                        m_hoverIdx = -1;
++    void                       updateButtonHoverTimer();
+     bool                       m_bLastEnabledState  = false;
+     bool                       m_bWindowHasFocus    = false;
+     std::optional<CHyprColor>  m_bForcedBarColor;
+diff --git a/hyprbars/globals.hpp b/hyprbars/globals.hpp
+index 0ef19ae..8eaccb3 100644
+--- a/hyprbars/globals.hpp
++++ b/hyprbars/globals.hpp
+@@ -37,7 +37,7 @@ struct SGlobalState {
+         SP<Config::Values::CIntValue>        barPadding;
+         SP<Config::Values::CIntValue>        barButtonPadding;
+         SP<Config::Values::CBoolValue>       barBlur, barTitleEnabled, barPartOfWindow, barPrecedenceOverBorder, enabled, iconOnHover;
+-        SP<Config::Values::CStringValue>     barTextFont, barTextAlign, barButtonsAlignment, onDoubleClick;
++        SP<Config::Values::CStringValue>     barTextFont, barTextAlign, barButtonsAlignment, onDoubleClick, onRightClick, onButtonHover;
+     } config;
+ };
+ 
+diff --git a/hyprbars/main.cpp b/hyprbars/main.cpp
+index ae9c90b..6143279 100644
+--- a/hyprbars/main.cpp
++++ b/hyprbars/main.cpp
+@@ -232,6 +232,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+     g_pGlobalState->config.enabled             = makeShared<Config::Values::CBoolValue>("plugin:hyprbars:enabled", "Whether bars are enabled", true);
+     g_pGlobalState->config.iconOnHover         = makeShared<Config::Values::CBoolValue>("plugin:hyprbars:icon_on_hover", "Whether to use an icon on hover of the buttons", false);
+     g_pGlobalState->config.onDoubleClick       = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_double_click", "Action to execute on double click of the bar", "");
++    g_pGlobalState->config.onRightClick        = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_right_click",
++                                                                                          "Action to execute on right click of the bar ({x} {y} = cursor, {address} = window)", "");
++    g_pGlobalState->config.onButtonHover       = makeShared<Config::Values::CStringValue>("plugin:hyprbars:on_button_hover",
++                                                                                          "Action after holding the cursor over a button ({index} from the right, {x} {y}, {address})", "");
+ 
+     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.barColor);
+     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.textColor);
+@@ -251,6 +255,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.enabled);
+     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.iconOnHover);
+     HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onDoubleClick);
++    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onRightClick);
++    HyprlandAPI::addConfigValueV2(PHANDLE, g_pGlobalState->config.onButtonHover);
+ 
+     if (Config::mgr()->type() == Config::CONFIG_LEGACY)
+         HyprlandAPI::addConfigKeyword(PHANDLE, "plugin:hyprbars:hyprbars-button", onNewButton, Hyprlang::SHandlerOptions{});

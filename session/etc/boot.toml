@@ -1,0 +1,14 @@
+# LatteOS — /etc/latteos/boot.toml (číta latte-boot)
+
+# VMSVGA 3D vo VirtualBoxe: experimentálne, klienti sa bez render volieb zasekávajú (setup/f1/RESULTS.md)
+allow_vm3d = false
+
+# po koľkých pádoch relácie NORMAL za sebou naštartuje SAFE
+crash_limit = 2
+
+# relácia je zdravá po toľkých sekundách (latte-boot ok --after)
+healthy_secs = 60
+
+# obrazovka prihlásenia: "latte" (vlastný, Quickshell pod labwc + pixman), "tui" (tuigreet) alebo "noctalia"
+# noctalia zatiaľ vypnutý: pod greetd na VirtualBoxe prepúšťa pamäť jadra (setup/f1/RESULTS.md)
+greeter = "latte"

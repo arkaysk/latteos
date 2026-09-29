@@ -1,0 +1,21 @@
+# LatteOS — rozloženie okna (Super+Z), ako „snap layouts“ vo Windows 11: mini obrazovky, klik presunie
+# aktívne okno do zvolenej časti (latte/snap.lua v Hyprlande). V páske sa okno uvoľní a pláva.
+
+id          = "latteos/snap"
+name        = "LatteOS Rozloženie okna"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "windows"]
+icon        = "layout-grid"
+description = "Rozloženia okna: polovice, štvrtiny, tretiny, stred, celá plocha."
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 520
+height    = 330
+placement = "floating"
+position  = "center"

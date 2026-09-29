@@ -1,0 +1,10 @@
+#!/bin/sh
+# latte-snimka ulozit — celá obrazovka rovno do súboru ako Win+PrtSc: ~/Obrázky/Snímky obrazovky/Snímka RRRR-MM-DD HHMMSS.png
+# (bez okna a otázok), cesta ide aj do schránky ako súbor a príde oznámenie s tlačidlom Otvoriť.
+dir="$(xdg-user-dir PICTURES 2>/dev/null || echo "$HOME/Obrázky")/Snímky obrazovky"
+mkdir -p "$dir"
+f="$dir/Snímka $(date +%Y-%m-%d\ %H%M%S).png"
+grim "$f" || exit 1
+printf 'file://%s\n' "$f" | wl-copy -t text/uri-list
+( a=$(notify-send -a LatteOS -i "$f" -A otvor=Otvoriť -A priecinok="Otvoriť priečinok" "Snímka obrazovky uložená" "$(basename "$f")")
+  case "$a" in otvor) xdg-open "$f" ;; priecinok) latte-app subory "$dir" ;; esac ) >/dev/null 2>&1 &

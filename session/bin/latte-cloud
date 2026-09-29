@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# latte-cloud — cloudové priečinky LatteOS (Nastavenia › Dáta › Synchronizácia) cez rclone.
+# Účet (Google Drive, OneDrive, Dropbox, Nextcloud/WebDAV, …) sa pridá v rclone config; LatteOS ho pripojí
+# ako priečinok ~/Cloud/<názov> (súbory sa sťahujú pri otvorení, zmeny sa odosielajú na pozadí).
+#
+#   latte-cloud list              názov|typ|pripojené(0/1)|pri-prihlásení(0/1)
+#   latte-cloud add               otvorí rclone config v termináli (sprievodca rclone)
+#   latte-cloud mount NÁZOV       pripojí do ~/Cloud/NÁZOV (systemd --user latte-cloud@NÁZOV)
+#   latte-cloud unmount NÁZOV     odpojí
+#   latte-cloud auto NÁZOV on|off pripájať po prihlásení
+set -u
+base="$HOME/Cloud"
+unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+unit() { printf 'latte-cloud@%s.service' "$(systemd-escape "$1")"; }
+ensure_unit() {
+    [ -f "$unitdir/latte-cloud@.service" ] && return
+    mkdir -p "$unitdir"
+    cat > "$unitdir/latte-cloud@.service" <<EOF
+[Unit]
+Description=LatteOS cloudový priečinok %I (rclone)
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/mkdir -p %h/Cloud/%I
+ExecStart=/usr/bin/rclone mount "%I:" "%h/Cloud/%I" --vfs-cache-mode writes --dir-cache-time 5m --umask 077
+ExecStop=/usr/bin/fusermount3 -u "%h/Cloud/%I"
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+}
+valid() { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "neplatný názov účtu: $1" >&2; exit 2; }; }
+
+case "${1:-list}" in
+list)
+    rclone listremotes --long 2>/dev/null | while read -r name type; do
+        n="${name%:}"
+        m=0; mountpoint -q "$base/$n" 2>/dev/null && m=1
+        a=0; systemctl --user is-enabled -q "$(unit "$n")" 2>/dev/null && a=1
+        echo "$n|$type|$m|$a"
+    done ;;
+add)
+    exec foot -e sh -c 'echo "Sprievodca rclone: n = nový účet, zvoľ službu (drive = Google Drive, onedrive, dropbox, webdav = Nextcloud)…"; echo; rclone config; echo; read -p "Enter zavrie okno…" x' ;;
+mount)
+    n="${2:?názov}"; valid "$n"; ensure_unit
+    systemctl --user start "$(unit "$n")" && echo "pripojené: $base/$n" ;;
+unmount)
+    n="${2:?názov}"; valid "$n"
+    systemctl --user stop "$(unit "$n")"; echo "odpojené: $n" ;;
+auto)
+    n="${2:?názov}"; valid "$n"; ensure_unit
+    if [ "${3:-on}" = on ]; then systemctl --user enable "$(unit "$n")"; else systemctl --user disable "$(unit "$n")"; fi ;;
+*)
+    sed -n '2,11p' "$0"; exit 2 ;;
+esac

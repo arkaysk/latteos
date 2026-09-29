@@ -1,0 +1,649 @@
+#!/usr/bin/python3
+"""latte-tc — nástroje Total Commandera pre Súbory LatteOS (výstup JSON alebo riadky).
+
+  latte-tc nahlad SÚBOR [--hex] [--od N] [--dlzka N] [--kodovanie K]  Lister (F3): text / hex, odhad kódovania
+  latte-tc hladaj KOREŇ [--maska M] [--text T] [--regex] [--velkost-od B] [--velkost-do B]
+                         [--dni N] [--priecinky] [--archivy]            Alt+F7: riadok = cesta (priebežne)
+  latte-tc porovnaj A B [--obsah]                                      Shift+F2: JSON { meno: stav }
+  latte-tc synchronizuj A B [--smer lr|rl|obe] [--obsah] [--vykonaj]    plán (JSON) alebo vykonanie
+  latte-tc premenuj [--vzor „[N]“] [--pripona „[E]“] [--hladaj X] [--nahrad Y] [--regex] [--pismena upper|lower|prve]
+                    [--start 1] [--krok 1] [--cifry 1] [--vykonaj] -- SÚBOR…   Ctrl+M: JSON [[staré, nové]]
+  latte-tc spat                                                         vráti posledné hromadné premenovanie
+  latte-tc sucet md5|sha1|sha256 SÚBOR…                                 vytvorí SÚBOR.sha256 (pri viacerých súčty.sha256)
+  latte-tc over SÚČTY                                                   JSON [[súbor, ok|zlý|chýba]]
+  latte-tc rozdel SÚBOR VEĽKOSŤ [CIEĽ]                                   časti .001, .002 … (VEĽKOSŤ: 100M, 1.4G, 700M)
+  latte-tc spoj PRVÁ.001 [CIEĽ]
+  latte-tc atributy [--prava 644] [--datum "RRRR-MM-DD HH:MM"] [--rekurzivne] -- SÚBOR…
+  latte-tc archiv zoznam A | rozbal A CIEĽ [POLOŽKA…] | zbal CIEĽ.{zip,7z,tar.gz,tar.xz,tar.zst} SÚBOR… | test A
+                 | smaz A POLOŽKA… | pridaj A SÚBOR…   [--heslo]: heslo na stdin (7z/zip s AES, 7z aj so skrytými menami);
+                 kód 3 = archív chce heslo alebo je zlé; --casti 100M = viac zväzkov (.7z.001 …)
+  latte-tc diff A B                                                    porovnanie súborov: JSON riadky vedľa seba / binárne rozdiely
+  latte-tc odkaz symbolicky|pevny CIEĽ NOVÝ                             vytvorí odkaz NOVÝ → CIEĽ
+  latte-tc kod base64|uue SÚBOR [PRIEČINOK] · dekod SÚBOR [PRIEČINOK]   Súbory › Zakódovať / Dekódovať (ako v TC)
+  latte-tc strom PRIEČINOK                                             JSON: podpriečinky (meno, má ďalšie) pre strom Alt+F10
+  latte-tc vlastnosti SÚBOR                                             JSON: práva, vlastník, dátumy, odkaz, MIME
+Zmeny robí iba s tvojimi právami. Premenovanie si pamätá posledný krok (~/.local/state/latteos/premenovanie.json).
+"""
+import datetime, fnmatch, grp, hashlib, json, os, pwd, re, shutil, stat, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+UNDO = os.path.join(os.environ.get("XDG_STATE_HOME") or HOME + "/.local/state", "latteos", "premenovanie.json")
+
+
+def opt(a, name, default=None, flag=False):
+    if name in a:
+        i = a.index(name)
+        if flag:
+            a.pop(i); return True
+        a.pop(i); return a.pop(i)
+    return False if flag else default
+
+
+def human(n):
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return ("%d %s" if u == "B" else "%.1f %s") % (n, u)
+        n /= 1024
+    return "%.1f PB" % n
+
+
+# ── Lister ────────────────────────────────────────────────────────────────────────────
+def nahlad(a):
+    hexm = opt(a, "--hex", flag=True)
+    start = int(opt(a, "--od", "0")); length = int(opt(a, "--dlzka", str(256 * 1024)))
+    enc = opt(a, "--kodovanie", "")
+    p = a[0]
+    size = os.path.getsize(p)
+    with open(p, "rb") as f:
+        f.seek(start); data = f.read(length)
+    binary = b"\0" in data[:4096]
+    res = {"size": size, "start": start, "len": len(data), "more": start + len(data) < size, "binary": binary}
+    try:
+        res["mime"] = subprocess.run(["file", "-b", "--mime-type", p], capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        res["mime"] = ""
+    if hexm or (binary and not enc):
+        lines = []
+        for i in range(0, len(data), 16):
+            ch = data[i:i + 16]
+            lines.append("%08X  %-48s  %s" % (start + i, " ".join("%02X" % b for b in ch), "".join(chr(b) if 32 <= b < 127 else "." for b in ch)))
+        res.update(mode="hex", text="\n".join(lines))
+        return res
+    for e in ([enc] if enc else ["utf-8", "cp1250", "iso-8859-2", "latin-1"]):
+        try:
+            res.update(mode="text", encoding=e, text=data.decode(e))
+            return res
+        except (UnicodeDecodeError, LookupError):
+            continue
+    res.update(mode="text", encoding="latin-1", text=data.decode("latin-1", "replace"))
+    return res
+
+
+# ── hľadanie ─────────────────────────────────────────────────────────────────────────
+def hladaj(a):
+    masks = [m for m in (opt(a, "--maska", "*") or "*").replace(",", ";").split(";") if m.strip()]
+    text = opt(a, "--text", ""); rx = opt(a, "--regex", flag=True)
+    smin = int(opt(a, "--velkost-od", "-1")); smax = int(opt(a, "--velkost-do", "-1"))
+    days = float(opt(a, "--dni", "-1")); dirs = opt(a, "--priecinky", flag=True); arch = opt(a, "--archivy", flag=True)
+    root = a[0]
+    pat = re.compile(text if rx else re.escape(text), re.I) if text else None
+    now = time.time(); n = 0
+    for base, ds, fs in os.walk(root):
+        ds[:] = [d for d in ds if not os.path.islink(os.path.join(base, d))]
+        names = (ds if dirs else []) + fs
+        for nm in names:
+            p = os.path.join(base, nm)
+            if not any(fnmatch.fnmatch(nm.lower(), m.strip().lower()) for m in masks):
+                if not (arch and re.search(r"\.(zip|7z|rar|tar|tgz|gz|xz|zst)$", nm, re.I)):
+                    continue
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            isdir = stat.S_ISDIR(st.st_mode)
+            if not isdir:
+                if smin >= 0 and st.st_size < smin or smax >= 0 and st.st_size > smax:
+                    continue
+            if days >= 0 and now - st.st_mtime > days * 86400:
+                continue
+            if arch and not isdir and re.search(r"\.(zip|7z|rar|tar|tgz|gz|xz|zst)$", nm, re.I):
+                try:
+                    lst = subprocess.run(["bsdtar", "-tf", p], capture_output=True, text=True, timeout=20).stdout.splitlines()
+                except Exception:
+                    lst = []
+                for inner in lst:
+                    if any(fnmatch.fnmatch(os.path.basename(inner).lower(), m.strip().lower()) for m in masks):
+                        print("A\t%s\t%s" % (p, inner), flush=True); n += 1
+                continue
+            if pat and not isdir:
+                try:
+                    with open(p, "rb") as f:
+                        chunk = f.read(8 << 20)
+                    if b"\0" in chunk[:1024]:
+                        continue
+                    if not pat.search(chunk.decode("utf-8", "replace")):
+                        continue
+                except OSError:
+                    continue
+            print(("D" if isdir else "F") + "\t" + p, flush=True); n += 1
+            if n >= 5000:
+                return 0
+    return 0
+
+
+# ── porovnanie a synchronizácia ─────────────────────────────────────────────────────
+def same_content(x, y):
+    if os.path.getsize(x) != os.path.getsize(y):
+        return False
+    with open(x, "rb") as f1, open(y, "rb") as f2:
+        while True:
+            b1, b2 = f1.read(1 << 20), f2.read(1 << 20)
+            if b1 != b2:
+                return False
+            if not b1:
+                return True
+
+
+def porovnaj(a):
+    content = opt(a, "--obsah", flag=True)
+    A, B = a[0], a[1]
+    la = {n: os.path.join(A, n) for n in os.listdir(A)}
+    lb = {n: os.path.join(B, n) for n in os.listdir(B)}
+    out = {}
+    for n in set(la) | set(lb):
+        if n not in lb:
+            out[n] = "iba_vlavo"; continue
+        if n not in la:
+            out[n] = "iba_vpravo"; continue
+        pa, pb = la[n], lb[n]
+        if os.path.isdir(pa) or os.path.isdir(pb):
+            out[n] = "priecinok"; continue
+        sa, sb = os.stat(pa), os.stat(pb)
+        if sa.st_size == sb.st_size and (abs(sa.st_mtime - sb.st_mtime) < 2 or (content and same_content(pa, pb))):
+            out[n] = "rovnake"
+        elif content and sa.st_size == sb.st_size and same_content(pa, pb):
+            out[n] = "rovnake"
+        else:
+            out[n] = "novsie_vlavo" if sa.st_mtime > sb.st_mtime else "novsie_vpravo"
+    return out
+
+
+def sync_plan(A, B, smer, content):
+    plan = []
+    for base, ds, fs in os.walk(A):
+        rel = os.path.relpath(base, A)
+        for f in fs:
+            pa = os.path.join(base, f); pb = os.path.normpath(os.path.join(B, rel, f))
+            if not os.path.exists(pb):
+                if smer in ("lr", "obe"):
+                    plan.append({"akcia": "→", "subor": os.path.normpath(os.path.join(rel, f)), "velkost": os.path.getsize(pa)})
+                continue
+            sa, sb = os.stat(pa), os.stat(pb)
+            same = sa.st_size == sb.st_size and (abs(sa.st_mtime - sb.st_mtime) < 2 if not content else same_content(pa, pb))
+            if same:
+                continue
+            if sa.st_mtime > sb.st_mtime and smer in ("lr", "obe"):
+                plan.append({"akcia": "→", "subor": os.path.normpath(os.path.join(rel, f)), "velkost": sa.st_size})
+            elif sb.st_mtime > sa.st_mtime and smer in ("rl", "obe"):
+                plan.append({"akcia": "←", "subor": os.path.normpath(os.path.join(rel, f)), "velkost": sb.st_size})
+    if smer in ("rl", "obe"):
+        for base, ds, fs in os.walk(B):
+            rel = os.path.relpath(base, B)
+            for f in fs:
+                if not os.path.exists(os.path.normpath(os.path.join(A, rel, f))):
+                    plan.append({"akcia": "←", "subor": os.path.normpath(os.path.join(rel, f)), "velkost": os.path.getsize(os.path.join(base, f))})
+    return plan
+
+
+def synchronizuj(a):
+    smer = opt(a, "--smer", "lr"); content = opt(a, "--obsah", flag=True); run = opt(a, "--vykonaj", flag=True)
+    A, B = a[0], a[1]
+    plan = sync_plan(A, B, smer, content)
+    if not run:
+        print(json.dumps(plan, ensure_ascii=False)); return 0
+    for i, x in enumerate(plan):
+        src, dst = (os.path.join(A, x["subor"]), os.path.join(B, x["subor"])) if x["akcia"] == "→" else (os.path.join(B, x["subor"]), os.path.join(A, x["subor"]))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        print("P", int(100 * (i + 1) / max(1, len(plan))), x["subor"], flush=True)
+    print("OK", len(plan)); return 0
+
+
+# ── hromadné premenovanie (Ctrl+M) ─────────────────────────────────────────────────
+def premenuj(a):
+    vzor = opt(a, "--vzor", "[N]"); pripona = opt(a, "--pripona", "[E]")
+    hladaj_ = opt(a, "--hladaj", ""); nahrad = opt(a, "--nahrad", ""); rx = opt(a, "--regex", flag=True)
+    pismena = opt(a, "--pismena", ""); start = int(opt(a, "--start", "1")); krok = int(opt(a, "--krok", "1")); cifry = int(opt(a, "--cifry", "1"))
+    run = opt(a, "--vykonaj", flag=True)
+    if a and a[0] == "--":
+        a = a[1:]
+    pairs, c = [], start
+    for p in a:
+        d, n = os.path.split(p)
+        stem, ext = os.path.splitext(n) if not os.path.isdir(p) else (n, "")
+        ext = ext[1:]
+        mt = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+
+        def expand(t):
+            t = t.replace("[N]", stem).replace("[E]", ext).replace("[P]", os.path.basename(d))
+            t = re.sub(r"\[N(\d+)(?:-(\d+))?\]", lambda m: stem[int(m.group(1)) - 1:int(m.group(2) or m.group(1))], t)
+            t = re.sub(r"\[C(?::(\d+))?\]", lambda m: str(c).zfill(int(m.group(1) or cifry)), t)
+            return (t.replace("[Y]", mt.strftime("%Y")).replace("[M]", mt.strftime("%m")).replace("[D]", mt.strftime("%d"))
+                     .replace("[h]", mt.strftime("%H")).replace("[m]", mt.strftime("%M")).replace("[s]", mt.strftime("%S")))
+        new = expand(vzor)
+        e2 = expand(pripona)
+        full = new + ("." + e2 if e2 else "")
+        if hladaj_:
+            full = re.sub(hladaj_, nahrad, full) if rx else full.replace(hladaj_, nahrad)
+        if pismena == "upper":
+            full = full.upper()
+        elif pismena == "lower":
+            full = full.lower()
+        elif pismena == "prve":
+            full = full[:1].upper() + full[1:].lower()
+        pairs.append([p, os.path.join(d, full)])
+        c += krok
+    news = [q for _, q in pairs]
+    dup = {q for q in news if news.count(q) > 1}
+    if not run:
+        print(json.dumps([[os.path.basename(p), os.path.basename(q), "duplicitné" if q in dup else ("existuje" if os.path.exists(q) and q != p else "")] for p, q in pairs], ensure_ascii=False))
+        return 0
+    if dup:
+        print("E duplicitné nové mená", file=sys.stderr); return 1
+    done = []
+    tmp = [(p, q, p + ".latte-mv-%d" % i) for i, (p, q) in enumerate(pairs) if p != q]
+    for p, q, t in tmp:                          # dvojfázovo, aby zámena a↔b fungovala
+        os.rename(p, t)
+    for p, q, t in tmp:
+        if os.path.exists(q):
+            os.rename(t, p); print("E existuje", q); continue
+        os.rename(t, q); done.append([p, q])
+    os.makedirs(os.path.dirname(UNDO), exist_ok=True)
+    json.dump(done, open(UNDO, "w"), ensure_ascii=False)
+    print("OK", len(done)); return 0
+
+
+def spat(a):
+    try:
+        done = json.load(open(UNDO))
+    except (OSError, ValueError):
+        print("E nie je čo vrátiť"); return 1
+    n = 0
+    for p, q in reversed(done):
+        if os.path.exists(q) and not os.path.exists(p):
+            os.rename(q, p); n += 1
+    os.remove(UNDO)
+    print("OK", n); return 0
+
+
+# ── súčty, rozdelenie, spojenie ────────────────────────────────────────────────────
+def digest(p, algo):
+    h = hashlib.new(algo)
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def sucet(a):
+    algo = a[0]; files = [f for f in a[1:] if os.path.isfile(f)]
+    if not files:
+        return 1
+    d = os.path.dirname(files[0])
+    target = files[0] + "." + algo if len(files) == 1 else os.path.join(d, "súčty." + algo)
+    with open(target, "w") as f:
+        for p in files:
+            f.write("%s *%s\n" % (digest(p, algo), os.path.relpath(p, d)))
+    print(target); return 0
+
+
+def over(a):
+    sf = a[0]; algo = os.path.splitext(sf)[1][1:].lower() or "sha256"
+    if algo not in ("md5", "sha1", "sha256", "sha512"):
+        algo = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}.get(len(open(sf).readline().split()[0]), "sha256")
+    d = os.path.dirname(sf); out = []
+    for line in open(sf, encoding="utf-8", errors="replace"):
+        m = re.match(r"^([0-9a-fA-F]+)\s+\*?(.+)$", line.strip())
+        if not m:
+            continue
+        p = os.path.join(d, m.group(2))
+        out.append([m.group(2), "chýba" if not os.path.exists(p) else ("ok" if digest(p, algo) == m.group(1).lower() else "zlý")])
+    print(json.dumps(out, ensure_ascii=False)); return 0
+
+
+def size_arg(s):
+    m = re.match(r"^([\d.,]+)\s*([KMGT]?)", s.upper())
+    return int(float(m.group(1).replace(",", ".")) * {"": 1, "K": 1024, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[m.group(2)])
+
+
+def rozdel(a):
+    p, part = a[0], size_arg(a[1]); dst = a[2] if len(a) > 2 else os.path.dirname(p)
+    base = os.path.join(dst, os.path.basename(p)); i = 0; total = os.path.getsize(p)
+    with open(p, "rb") as f:
+        while True:
+            left = part; i += 1; wrote = 0
+            with open("%s.%03d" % (base, i), "wb") as o:
+                while left > 0:
+                    b = f.read(min(1 << 20, left))
+                    if not b:
+                        break
+                    o.write(b); left -= len(b); wrote += len(b)
+            print("P", int(100 * min(total, i * part) / max(1, total)), "%s.%03d" % (os.path.basename(base), i), flush=True)
+            if wrote < part:
+                if wrote == 0:
+                    os.remove("%s.%03d" % (base, i)); i -= 1
+                break
+    with open(base + ".crc", "w") as c:                 # ako TC: meno a veľkosť pôvodného súboru
+        c.write("filename=%s\nsize=%d\nsha256=%s\n" % (os.path.basename(p), total, digest(p, "sha256")))
+    print("OK", i); return 0
+
+
+def spoj(a):
+    first = a[0]; base = re.sub(r"\.\d{3}$", "", first)
+    dst = a[1] if len(a) > 1 else os.path.dirname(first)
+    name = os.path.basename(base)
+    crc = base + ".crc"; want = None
+    if os.path.exists(crc):
+        kv = dict(l.strip().split("=", 1) for l in open(crc) if "=" in l)
+        name = kv.get("filename", name); want = kv.get("sha256")
+    out = os.path.join(dst, name)
+    if os.path.exists(out):
+        out = out + ".spojené"
+    i = 1
+    with open(out, "wb") as o:
+        while os.path.exists("%s.%03d" % (base, i)):
+            with open("%s.%03d" % (base, i), "rb") as f:
+                shutil.copyfileobj(f, o, 1 << 20)
+            i += 1
+    ok = want is None or digest(out, "sha256") == want
+    print("OK" if ok else "E kontrolný súčet nesedí", out); return 0 if ok else 1
+
+
+# ── atribúty, vlastnosti ──────────────────────────────────────────────────────────────
+def atributy(a):
+    prava = opt(a, "--prava", ""); datum = opt(a, "--datum", ""); rek = opt(a, "--rekurzivne", flag=True)
+    if a and a[0] == "--":
+        a = a[1:]
+    ts = time.mktime(time.strptime(datum, "%Y-%m-%d %H:%M")) if datum else None
+    def apply(p):
+        if prava:
+            os.chmod(p, int(prava, 8))
+        if ts is not None:
+            os.utime(p, (ts, ts), follow_symlinks=False)
+    n = 0
+    for p in a:
+        apply(p); n += 1
+        if rek and os.path.isdir(p):
+            for base, ds, fs in os.walk(p):
+                for x in ds + fs:
+                    apply(os.path.join(base, x)); n += 1
+    print("OK", n); return 0
+
+
+def vlastnosti(a):
+    p = a[0]; st = os.lstat(p)
+    try:
+        owner = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        owner = str(st.st_uid)
+    try:
+        group = grp.getgrgid(st.st_gid).gr_name
+    except KeyError:
+        group = str(st.st_gid)
+    fmt = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+    res = {"path": p, "mode": oct(st.st_mode & 0o7777)[2:].zfill(3), "rwx": stat.filemode(st.st_mode), "owner": owner, "group": group,
+           "size": st.st_size, "modified": fmt(st.st_mtime), "accessed": fmt(st.st_atime), "changed": fmt(st.st_ctime),
+           "link": os.readlink(p) if os.path.islink(p) else "", "inode": st.st_ino, "links": st.st_nlink}
+    try:
+        res["mime"] = subprocess.run(["file", "-b", "--mime-type", p], capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        res["mime"] = ""
+    print(json.dumps(res, ensure_ascii=False)); return 0
+
+
+# ── archívy ────────────────────────────────────────────────────────────────────────────
+SEVENZ = shutil.which("7z") or shutil.which("7za") or shutil.which("7zz")
+NEEDS_PW = re.compile(r"wrong password|password|passphrase|encrypted|can not open encrypted", re.I)
+
+
+def _pw(a):
+    """--heslo: heslo príde na stdin (nie v argumentoch latte-tc). 7z ho dostane ako -p (vidí ho iba tento proces krátko)."""
+    if opt(a, "--heslo", flag=True):
+        return sys.stdin.readline().rstrip("\n")
+    return None
+
+
+def _7z_list(path, pw):
+    r = subprocess.run([SEVENZ, "l", "-slt", "-p" + (pw or ""), path], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    items, cur = [], {}
+    body = r.stdout.split("----------", 1)[-1]
+    for line in body.splitlines() + [""]:
+        if not line.strip():
+            if cur.get("Path"):
+                items.append({"name": cur["Path"].rstrip("/"), "dir": "D" in cur.get("Attributes", "") or cur.get("Folder") == "+",
+                              "size": int(cur.get("Size") or 0), "date": cur.get("Modified", "")[:16]})
+            cur = {}
+            continue
+        k, _, v = line.partition(" = ")
+        cur[k.strip()] = v.strip()
+    return r, items
+
+
+def archiv(a):
+    cmd = a[0]
+    pw = _pw(a)
+    parts = opt(a, "--casti")
+    if cmd == "zoznam":
+        r = subprocess.run(["bsdtar", "-tvf", a[1]], capture_output=True, text=True)
+        items = []
+        for line in r.stdout.splitlines():
+            f = line.split(None, 8)
+            if len(f) >= 9:
+                items.append({"name": f[8].split(" -> ")[0].rstrip("/"), "dir": f[0].startswith("d"), "size": int(f[4]) if f[4].isdigit() else 0,
+                              "date": " ".join(f[5:8])})
+        err = r.stderr.strip()[:300] if r.returncode else ""
+        need = False
+        # 7z so skrytými menami, viac zväzkov (.7z.001) alebo heslo: bsdtar nestačí
+        if (r.returncode or pw is not None or re.search(r"\.(7z|zip)\.0*1$", a[1], re.I)) and SEVENZ:
+            r7, it7 = _7z_list(a[1], pw)
+            if r7.returncode == 0 and it7:
+                items, err = it7, ""
+            elif NEEDS_PW.search(r7.stdout + r7.stderr):
+                need, err = True, "Archív je chránený heslom" + (" (zlé heslo)" if pw else "")
+        print(json.dumps({"items": items, "error": err, "needPassword": need}, ensure_ascii=False)); return 3 if need else 0
+    if cmd == "rozbal":
+        os.makedirs(a[2], exist_ok=True)
+        if pw is None:
+            r = subprocess.run(["bsdtar", "-xf", a[1], "-C", a[2]] + a[3:], capture_output=True, text=True)
+            if r.returncode == 0:
+                return 0
+            if not SEVENZ:
+                sys.stderr.write(r.stderr); return r.returncode
+        r = subprocess.run([SEVENZ, "x", "-y", "-bso0", "-bsp0", "-p" + (pw or ""), "-o" + a[2], a[1]] + a[3:], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if r.returncode and NEEDS_PW.search(r.stdout + r.stderr):
+            print("E heslo"); return 3
+        return r.returncode
+    if cmd == "test":
+        if SEVENZ and (pw is not None or a[1].lower().endswith((".7z", ".zip", ".001"))):
+            r = subprocess.run([SEVENZ, "t", "-p" + (pw or ""), a[1]], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode and NEEDS_PW.search(r.stdout + r.stderr):
+                print("E heslo"); return 3
+            print("OK" if r.returncode == 0 else "E " + (r.stderr or r.stdout).strip()[-300:]); return r.returncode
+        r = subprocess.run(["bsdtar", "-tf", a[1]], capture_output=True, text=True)
+        print("OK" if r.returncode == 0 else "E " + r.stderr.strip()[:300]); return r.returncode
+    if cmd in ("smaz", "pridaj"):
+        if not SEVENZ:
+            print("E chýba 7z"); return 2
+        if cmd == "smaz":
+            r = subprocess.run([SEVENZ, "d", "-bso0", "-bsp0", "-p" + (pw or ""), a[1]] + a[2:], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        else:
+            files = a[2:]; d = os.path.dirname(files[0])
+            r = subprocess.run([SEVENZ, "a", "-bso0", "-bsp0"] + (["-p" + pw] if pw else []) + [os.path.abspath(a[1])] + [os.path.relpath(f, d) for f in files],
+                               cwd=d, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if r.returncode and NEEDS_PW.search(r.stdout + r.stderr):
+            print("E heslo"); return 3
+        print("OK" if r.returncode == 0 else "E " + (r.stderr or r.stdout).strip()[-300:]); return r.returncode
+    if cmd == "zbal":
+        target, files = a[1], a[2:]
+        d = os.path.dirname(files[0]); rel = [os.path.relpath(f, d) for f in files]
+        t = target.lower()
+        if (pw or parts) and SEVENZ and (t.endswith(".7z") or t.endswith(".zip")):
+            extra = (["-p" + pw] + (["-mhe=on"] if t.endswith(".7z") else ["-mem=AES256"]) if pw else []) + (["-v" + parts.lower()] if parts else [])
+            r = subprocess.run([SEVENZ, "a", "-bso0", "-bsp0", "-t" + ("7z" if t.endswith(".7z") else "zip")] + extra + [target] + rel, cwd=d, stdin=subprocess.DEVNULL)
+        elif t.endswith(".7z"):
+            r = subprocess.run(["7z", "a", "-bso0", "-bsp0", target] + rel, cwd=d)
+        elif t.endswith(".zip"):
+            r = subprocess.run(["zip", "-r", "-q", target] + rel, cwd=d)
+        else:
+            flag = {"tar.gz": "-z", "tgz": "-z", "tar.xz": "-J", "tar.zst": "--zstd", "tar": ""}
+            k = next((k for k in flag if t.endswith("." + k)), "tar")
+            r = subprocess.run(["tar", "-c"] + ([flag[k]] if flag[k] else []) + ["-f", target] + rel, cwd=d)
+        print("OK" if r.returncode == 0 else "E zlyhalo", target); return r.returncode
+    return 2
+
+
+def diff(a):
+    """Porovnanie dvoch súborov (TC: Súbory › Porovnať podľa obsahu). Text: riadky vedľa seba; binárne: rozdielne bajty."""
+    A, B = a[0], a[1]
+    def load(p):
+        with open(p, "rb") as f:
+            return f.read(8 * 1024 * 1024)
+    x, y = load(A), load(B)
+    binary = b"\0" in x[:8192] or b"\0" in y[:8192]
+    if binary:
+        n, first, spans = 0, -1, []
+        for i in range(min(len(x), len(y))):
+            if x[i] != y[i]:
+                n += 1
+                if first < 0: first = i
+                if len(spans) < 200: spans.append([i, x[i], y[i]])
+        return {"binary": True, "sizeA": os.path.getsize(A), "sizeB": os.path.getsize(B), "different": n + abs(len(x) - len(y)), "first": first, "bytes": spans}
+    import difflib
+    def dec(b):
+        for enc in ("utf-8", "cp1250"):
+            try: return b.decode(enc)
+            except UnicodeDecodeError: pass
+        return b.decode("latin-1")
+    la, lb = dec(x).splitlines(), dec(y).splitlines()
+    rows, stats = [], {"equal": 0, "change": 0, "add": 0, "del": 0}
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, la, lb, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                rows.append(["=", i1 + k + 1, la[i1 + k], j1 + k + 1, lb[j1 + k]])
+            stats["equal"] += i2 - i1
+            continue
+        n = max(i2 - i1, j2 - j1)
+        for k in range(n):
+            l = la[i1 + k] if i1 + k < i2 else None
+            r = lb[j1 + k] if j1 + k < j2 else None
+            t = "~" if l is not None and r is not None else ("-" if r is None else "+")
+            rows.append([t, i1 + k + 1 if l is not None else 0, l or "", j1 + k + 1 if r is not None else 0, r or ""])
+            stats[{"~": "change", "-": "del", "+": "add"}[t]] += 1
+    return {"binary": False, "rows": rows[:50000], "stats": stats, "truncated": len(rows) > 50000}
+
+
+def odkaz(a):
+    kind, target, new = a[0], a[1], a[2]
+    if os.path.lexists(new):
+        print("E už existuje"); return 1
+    try:
+        if kind == "symbolicky":
+            os.symlink(target, new)
+        else:
+            os.link(target, new)
+    except OSError as e:
+        print("E", e.strerror); return 1
+    print("OK"); return 0
+
+
+def kod(a):
+    import base64, binascii
+    kind, src = a[0], a[1]
+    out_dir = a[2] if len(a) > 2 else os.path.dirname(src)
+    name = os.path.basename(src)
+    data = open(src, "rb").read()
+    if kind == "base64":
+        dst = os.path.join(out_dir, name + ".b64")
+        with open(dst, "wb") as f:
+            f.write(base64.encodebytes(data))
+    else:
+        dst = os.path.join(out_dir, name + ".uue")
+        with open(dst, "wb") as f:
+            f.write(b"begin 644 " + name.encode() + b"\n")
+            for i in range(0, len(data), 45):
+                f.write(binascii.b2a_uu(data[i:i + 45]))
+            f.write(b"`\nend\n")
+    print(dst); return 0
+
+
+def dekod(a):
+    import base64, binascii
+    src = a[0]
+    out_dir = a[1] if len(a) > 1 else os.path.dirname(src)
+    raw = open(src, "rb").read()
+    text = raw.decode("ascii", "replace")
+    m = re.search(r"^begin\s+\d+\s+(.+)$", text, re.M)
+    if m:                                               # UUE (aj MIME kódovanie UUE v TC)
+        name, out = m.group(1).strip(), bytearray()
+        for line in text[m.end():].splitlines():
+            if line.strip() in ("end", "`", ""):
+                if line.strip() == "end": break
+                continue
+            try: out += binascii.a2b_uu(line)
+            except binascii.Error: pass
+        data = bytes(out)
+    else:
+        name = re.sub(r"\.(b64|base64|mim|mime)$", "", os.path.basename(src), flags=re.I)
+        if name == os.path.basename(src): name += ".bin"
+        try: data = base64.b64decode(re.sub(rb"[^A-Za-z0-9+/=]", b"", raw))
+        except binascii.Error:
+            print("E nie je Base64 ani UUE"); return 1
+    dst = os.path.join(out_dir, os.path.basename(name))
+    if os.path.exists(dst):
+        root, ext = os.path.splitext(dst); k = 2
+        while os.path.exists("%s (%d)%s" % (root, k, ext)): k += 1
+        dst = "%s (%d)%s" % (root, k, ext)
+    with open(dst, "wb") as f:
+        f.write(data)
+    print(dst); return 0
+
+
+def strom(a):
+    d = a[0]
+    out = []
+    try:
+        names = sorted(os.listdir(d), key=str.lower)
+    except OSError:
+        names = []
+    for n in names:
+        p = os.path.join(d, n)
+        if not os.path.isdir(p) or os.path.islink(p):
+            continue
+        try:
+            sub = any(os.path.isdir(os.path.join(p, x)) and not os.path.islink(os.path.join(p, x)) for x in os.listdir(p))
+        except OSError:
+            sub = False
+        out.append({"name": n, "path": p, "hidden": n.startswith("."), "more": sub})
+    print(json.dumps(out, ensure_ascii=False)); return 0
+
+
+def main(a):
+    if not a:
+        print(__doc__); return 2
+    cmd, rest = a[0], a[1:]
+    if cmd == "nahlad":
+        print(json.dumps(nahlad(rest), ensure_ascii=False)); return 0
+    fn = {"hladaj": hladaj, "synchronizuj": synchronizuj, "premenuj": premenuj, "spat": spat, "sucet": sucet, "over": over,
+          "rozdel": rozdel, "spoj": spoj, "atributy": atributy, "vlastnosti": vlastnosti, "archiv": archiv,
+          "odkaz": odkaz, "kod": kod, "dekod": dekod, "strom": strom}.get(cmd)
+    if cmd == "diff":
+        print(json.dumps(diff(rest), ensure_ascii=False)); return 0
+    if cmd == "porovnaj":
+        print(json.dumps(porovnaj(rest), ensure_ascii=False)); return 0
+    if fn:
+        return fn(rest)
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

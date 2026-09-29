@@ -1,0 +1,27 @@
+{
+ "name": "Kapybara",
+ "about": "najpokojnejšia: bazénik a gumová kačička",
+ "profile": "kapybara",
+ "flyer": false,
+ "facing": "right",
+ "idle": [
+  "s-kackou",
+  "sedi"
+ ],
+ "sleep": "lezi",
+ "move": [
+  "stoji",
+  "sedi"
+ ],
+ "frames": [
+  "bazen",
+  "bazen-2",
+  "hero",
+  "kacka",
+  "lezi",
+  "lezi-kacka",
+  "s-kackou",
+  "sedi",
+  "stoji"
+ ]
+}

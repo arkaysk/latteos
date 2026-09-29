@@ -1,0 +1,24 @@
+# LatteOS — okamžité tlačidlo NET: aplikáciám zo zoznamu ~/.config/latteos/net-vypnute (latte-net) odreže
+# internet cez nftables podľa cgroup (Flatpak scope, app-latte-*.scope) a ukončí ich otvorené spojenia.
+[Unit]
+Description=LatteOS NET (okamžité vypnutie internetu aplikáciám)
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/latteos/latte-netd
+# destroy = bez chyby, ak tabuľka neexistuje (delete by pri zastavení hlásil zlyhanie)
+ExecStopPost=-/usr/sbin/nft destroy table inet latte_net
+Restart=on-failure
+RestartSec=2
+# iba nftables, ss a čítanie zoznamov používateľov
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

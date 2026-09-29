@@ -1,0 +1,111 @@
+{
+ "name": "Robot turista",
+ "about": "lieta s vrtuľkou: všetko naskenuje, odfotí a nabíja sa ⚡",
+ "profile": "turista",
+ "flyer": true,
+ "facing": "none",
+ "rightFacing": [
+  "boost",
+  "boost-1",
+  "boost-2",
+  "boost-3",
+  "boost-4",
+  "foti-1",
+  "foti-2",
+  "foti-3",
+  "foti-4",
+  "skenuje-1",
+  "skenuje-2",
+  "skenuje-3"
+ ],
+ "idle": [
+  "vznasa-1",
+  "vznasa-2"
+ ],
+ "sleep": "nabija-1",
+ "move": [
+  "vznasa-1",
+  "vznasa-2"
+ ],
+ "scan": "skenuje",
+ "photo": "foti",
+ "charge": "nabija",
+ "fast": "boost",
+ "anim": {
+  "boost": {
+   "frames": [
+    "boost-1",
+    "boost-2",
+    "boost-3",
+    "boost-4"
+   ],
+   "fps": 8,
+   "loop": true
+  },
+  "vznasa": {
+   "frames": [
+    "vznasa-1",
+    "vznasa-2"
+   ],
+   "fps": 3,
+   "loop": true
+  },
+  "foti": {
+   "frames": [
+    "foti-1",
+    "foti-2",
+    "foti-3",
+    "foti-4"
+   ],
+   "fps": 3,
+   "loop": false
+  },
+  "skenuje": {
+   "frames": [
+    "skenuje-1",
+    "skenuje-2",
+    "skenuje-3"
+   ],
+   "fps": 3,
+   "loop": true
+  },
+  "nabija": {
+   "frames": [
+    "nabija-1",
+    "nabija-2"
+   ],
+   "fps": 1,
+   "loop": true
+  }
+ },
+ "closeup": [
+  "zblizka-1",
+  "zblizka-2",
+  "zblizka-3"
+ ],
+ "frames": [
+  "boost",
+  "boost-1",
+  "boost-2",
+  "boost-3",
+  "boost-4",
+  "foti-1",
+  "foti-2",
+  "foti-3",
+  "foti-4",
+  "hero",
+  "nabija-1",
+  "nabija-2",
+  "sedi",
+  "skenuje-1",
+  "skenuje-2",
+  "skenuje-3",
+  "spi",
+  "vznasa-1",
+  "vznasa-2",
+  "zblizka-1",
+  "zblizka-2",
+  "zblizka-3",
+  "zmurk"
+ ]
+}

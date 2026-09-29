@@ -1,0 +1,129 @@
+#!/usr/bin/python3
+"""latte-kos — Kôš LatteOS podľa špecifikácie freedesktop (~/.local/share/Trash), bez gvfs.
+
+  latte-kos vyhod CESTA…     presunie do koša (zapíše .trashinfo s pôvodnou cestou a časom)
+  latte-kos vysypat          natrvalo vymaže všetko v koši
+  latte-kos obnov NÁZOV…     vráti položku z koša na pôvodné miesto (ak tam už niečo je, pridá „ (obnovené)“)
+  latte-kos obnov-cestu CESTA…  vráti naposledy zahodenú položku s touto pôvodnou cestou (Ctrl+Z v Súboroch)
+  latte-kos pocet            počet položiek v koši
+
+`gio trash --empty` a `--restore` potrebujú gvfs (trash://), ktorý LatteOS nemá; presun do koša
+cez `gio trash` funguje aj bez neho, ale kvôli jednotnosti ho robí tiež latte-kos.
+"""
+import datetime, os, shutil, sys, urllib.parse
+
+HOME = os.path.expanduser("~")
+TRASH = os.path.join(os.environ.get("XDG_DATA_HOME", HOME + "/.local/share"), "Trash")
+FILES, INFO = os.path.join(TRASH, "files"), os.path.join(TRASH, "info")
+
+
+def ensure():
+    os.makedirs(FILES, exist_ok=True)
+    os.makedirs(INFO, exist_ok=True)
+
+
+def throw(path):
+    path = os.path.abspath(path)
+    if not os.path.lexists(path):
+        raise FileNotFoundError(path)
+    base = os.path.basename(path.rstrip("/")) or "položka"
+    name, i = base, 2
+    while os.path.lexists(os.path.join(FILES, name)) or os.path.exists(os.path.join(INFO, name + ".trashinfo")):
+        stem, ext = os.path.splitext(base)
+        name = "%s.%d%s" % (stem, i, ext)
+        i += 1
+    with open(os.path.join(INFO, name + ".trashinfo"), "w", encoding="utf-8") as f:
+        f.write("[Trash Info]\nPath=%s\nDeletionDate=%s\n" % (urllib.parse.quote(path), datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+    shutil.move(path, os.path.join(FILES, name))
+
+
+def empty():
+    for d in (FILES, INFO):
+        for n in os.listdir(d):
+            p = os.path.join(d, n)
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+def restore(name):
+    src = os.path.join(FILES, name)
+    info = os.path.join(INFO, name + ".trashinfo")
+    orig = None
+    try:
+        for line in open(info, encoding="utf-8"):
+            if line.startswith("Path="):
+                orig = urllib.parse.unquote(line[5:].strip())
+    except OSError:
+        pass
+    if not orig:
+        orig = os.path.join(HOME, name)          # bez záznamu → do domovského priečinka
+    dst = orig
+    if os.path.lexists(dst):
+        stem, ext = os.path.splitext(orig)
+        dst = stem + " (obnovené)" + ext
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.move(src, dst)
+    try:
+        os.remove(info)
+    except OSError:
+        pass
+    return dst
+
+
+def restore_path(path):
+    """naposledy zahodená položka s pôvodnou cestou path (podľa DeletionDate)"""
+    best, when = None, ""
+    for f in os.listdir(INFO):
+        if not f.endswith(".trashinfo"):
+            continue
+        orig, date = None, ""
+        try:
+            for line in open(os.path.join(INFO, f), encoding="utf-8"):
+                if line.startswith("Path="):
+                    orig = urllib.parse.unquote(line[5:].strip())
+                elif line.startswith("DeletionDate="):
+                    date = line[13:].strip()
+        except OSError:
+            continue
+        if orig == path and date >= when and os.path.lexists(os.path.join(FILES, f[:-10])):
+            best, when = f[:-10], date
+    return restore(best) if best else None
+
+
+def main(a):
+    ensure()
+    try:
+        if len(a) >= 2 and a[0] == "vyhod":
+            for p in a[1:]:
+                throw(p)
+            return 0
+        if a == ["vysypat"]:
+            empty()
+            return 0
+        if len(a) >= 2 and a[0] == "obnov":
+            for n in a[1:]:
+                print(restore(os.path.basename(n)))
+            return 0
+        if len(a) >= 2 and a[0] == "obnov-cestu":
+            for p in a[1:]:
+                r = restore_path(os.path.abspath(p))
+                if r:
+                    print(r)
+            return 0
+        if a == ["pocet"]:
+            print(len(os.listdir(FILES)))
+            return 0
+    except (OSError, shutil.Error) as e:
+        print("latte-kos: " + str(e), file=sys.stderr)
+        return 1
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

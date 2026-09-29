@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nastavenia
+GenericName=Nastavenia LatteOS
+Comment=Vzhľad, okná, výkon, štart a prihlásenie
+Exec=latte-app nastavenia
+Icon=preferences-system
+Categories=Settings;System;
+Keywords=nastavenia;settings;tema;vzhlad;vykon;safe;

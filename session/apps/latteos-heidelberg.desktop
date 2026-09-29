@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Heidelberg
+GenericName=Editor dokumentov
+Comment=Dokumenty LatteOS: Markdown, HTML a text s náhľadom
+Exec=latte-app heidelberg %f
+Icon=accessories-text-editor
+Categories=Office;TextEditor;Utility;
+Keywords=editor;dokument;text;markdown;poznamky;heidelberg;
+MimeType=application/pdf;text/markdown;text/x-markdown;text/plain;text/html;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.oasis.opendocument.text;application/rtf;application/epub+zip;

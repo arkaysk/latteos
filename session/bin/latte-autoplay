@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""latte-autoplay — Automatické prehrávanie ako vo Windows: po vložení USB kľúča, SD karty alebo fotoaparátu ho pripojí
+a urobí to, čo si zvolil v Nastaveniach › Hardvér › Automatické prehrávanie (~/.config/latteos/autoplay):
+  spytat   (predvolené) oznámenie s voľbami Otvoriť v Súboroch · Importovať fotky a videá · Nič
+  otvorit  otvorí Súbory v koreni média
+  fotky    ak je na médiu priečinok DCIM, skopíruje nové fotky a videá do Obrázky/Import RRRR-MM-DD, inak ako „otvorit“
+  nic      iba pripojí (médium je v Súboroch)
+  vypnute  ani nepripojí
+Beží v relácii (hyprland.lua), počúva `udisksctl monitor` — žiadny polling. Pripája cez udisks bez hesla (polkit dovoľuje
+aktívnej relácii). Test bez USB: LATTE_AUTOPLAY_TEST=1 berie aj loop zariadenia.
+"""
+import json, os, re, shutil, subprocess, sys, threading, time
+
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "latteos", "autoplay")
+TEST = os.environ.get("LATTE_AUTOPLAY_TEST") == "1"
+PHOTO = re.compile(r"\.(jpe?g|png|heic|heif|webp|gif|raw|cr2|cr3|nef|arw|dng|mp4|mov|m4v|avi|mts|3gp)$", re.I)
+
+
+def sh(argv, timeout=20):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ""
+
+
+def pref():
+    if os.environ.get("LATTE_AUTOPLAY_PREF"):                 # test
+        return os.environ["LATTE_AUTOPLAY_PREF"]
+    try:
+        return open(CFG).read().strip() or "spytat"
+    except OSError:
+        return "spytat"
+
+
+def removable(dev):
+    """Vymeniteľný oddiel s filesystémom, ktorý ešte nie je pripojený → (label, fstype) alebo None."""
+    rc, out = sh(["lsblk", "-J", "-o", "NAME,RM,HOTPLUG,FSTYPE,LABEL,MOUNTPOINT,TYPE", "/dev/" + dev])
+    try:
+        d = json.loads(out)["blockdevices"][0]
+    except (ValueError, KeyError, IndexError):
+        return None
+    if not d.get("fstype") or d.get("mountpoint") or d.get("fstype") in ("swap", "crypto_LUKS", "LVM2_member"):
+        return None
+    hot = d.get("rm") in (True, "1", 1) or d.get("hotplug") in (True, "1", 1)
+    if not hot and not (TEST and dev.startswith("loop")):
+        return None
+    return d.get("label") or "", d.get("fstype")
+
+
+def mount(dev):
+    rc, out = sh(["udisksctl", "mount", "-b", "/dev/" + dev, "--no-user-interaction"])
+    m = re.search(r" at (.+?)\.?$", out.strip())
+    return m.group(1) if rc == 0 and m else None
+
+
+def notify(title, body, actions=(), icon="drive-removable-media"):
+    argv = ["notify-send", "-a", "LatteOS", "-i", icon, title, body]
+    for name, text in actions:
+        argv.append(f"--action={name}={text}")
+    rc, out = sh(argv, timeout=600 if actions else 10)
+    return out.strip()
+
+
+def open_files(path):
+    subprocess.Popen(["latte-app", "subory", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def import_photos(root, name):
+    dcim = os.path.join(root, "DCIM")
+    rc, pics = sh(["xdg-user-dir", "PICTURES"])
+    dest = os.path.join(pics.strip() or os.path.expanduser("~/Obrázky"), "Import " + time.strftime("%Y-%m-%d"))
+    n = 0
+    for base, _, files in os.walk(dcim):
+        for f in files:
+            if not PHOTO.search(f):
+                continue
+            src = os.path.join(base, f)
+            dst = os.path.join(dest, f)
+            if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+                continue                                   # už importované (ako Windows: iba nové)
+            os.makedirs(dest, exist_ok=True)
+            try:
+                shutil.copy2(src, dst); n += 1
+            except OSError:
+                pass
+    act = notify(f"{name}: importované {n} fotiek a videí" if n else f"{name}: nič nové na import",
+                 dest, [("otvor", "Otvoriť priečinok")], icon="camera-photo")
+    if act == "otvor":
+        open_files(dest)
+
+
+def handle(dev):
+    p = pref()
+    if p == "vypnute":
+        return
+    info = removable(dev)
+    if not info:
+        return
+    label, fs = info
+    root = mount(dev)
+    if not root:
+        return
+    name = label or ("Pamäťová karta" if dev.startswith("mmcblk") else "USB kľúč")
+    photos = os.path.isdir(os.path.join(root, "DCIM"))
+    if p == "nic":
+        return
+    if p == "otvorit" or (p == "fotky" and not photos):
+        open_files(root); return
+    if p == "fotky":
+        import_photos(root, name); return
+    acts = [("otvorit", "Otvoriť v Súboroch")] + ([("fotky", "Importovať fotky a videá")] if photos else []) + [("nic", "Nič")]
+    act = notify(f"{name} je pripojený", "Čo s ním? (voľbu zmeníš v Nastaveniach › Automatické prehrávanie)", acts)
+    if act == "otvorit":
+        open_files(root)
+    elif act == "fotky":
+        import_photos(root, name)
+
+
+def main():
+    if sys.argv[1:2] == ["--help"]:
+        print(__doc__.strip()); return 0
+    seen = {}
+    proc = subprocess.Popen(["udisksctl", "monitor"], stdout=subprocess.PIPE, text=True)
+    for line in proc.stdout:
+        m = re.search(r"Added /org/freedesktop/UDisks2/block_devices/(\w+)", line)
+        if not m:
+            continue
+        dev = m.group(1)
+        if time.time() - seen.get(dev, 0) < 5:        # jedno vloženie = viac udalostí
+            continue
+        seen[dev] = time.time()
+        # chvíľu počkať, kým jadro a udisks prečítajú filesystém; každé médium vo vlastnom vlákne (oznámenie čaká na klik)
+        threading.Timer(1.5, handle, args=(dev,)).start()
+    return proc.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

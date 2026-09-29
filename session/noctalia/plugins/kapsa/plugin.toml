@@ -1,0 +1,31 @@
+# LatteOS — Kapsa (schránka). Radar: „na kapse sedí jediná odložená vec; vnútri sú sloty histórie
+# schránky ako v Androide; nová odložená vec posunie predošlú do histórie“.
+# História: cliphist (wl-paste --watch cliphist store spúšťa relácia v hyprland.lua).
+# Klik = kapsa (navrchu posledná vec, pod ňou sloty), pravý klik na slot = odstrániť.
+
+id          = "latteos/kapsa"
+name        = "LatteOS Kapsa"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "clipboard"]
+icon        = "basket"
+description = "Kapsa: posledná odložená vec navrchu, história schránky v slotoch."
+
+[[widget]]
+id    = "pocket"
+entry = "widget.luau"
+
+[widget.actions]
+middle = "none"
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 460
+height    = 600
+placement = "floating"   # pri kliknutom ostrove (attached by pri priehľadnej lište bol priehľadný)
+position  = "auto"
+open_near_click = true

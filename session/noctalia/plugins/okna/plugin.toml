@@ -1,0 +1,31 @@
+# LatteOS — ovál okien vedľa šálky (zadanie 24. 9., bod 3): zrkadlí otvorené okná ikonami aplikácií
+# v poradí a režime okien (páska / dlaždice / plávajúce). Klik = prepnúť na okno (minimalizované sa vráti),
+# podržanie myši = živý náhľad okna (latte-app nahlad), pravý klik = ponuka okna ako vo Windows.
+# Ikona režimu na začiatku oválu: klik = ďalší režim okien.
+
+id          = "latteos/okna"
+name        = "LatteOS Okná"
+version     = "0.1.0"
+plugin_api  = 25
+author      = "latteos"
+license     = "MIT"
+dependencies = []
+tags        = ["latteos", "taskbar"]
+icon        = "app-window"
+description = "Ovál otvorených okien s ikonami, živým náhľadom a ponukou okna."
+
+[[widget]]
+id    = "oval"
+entry = "widget.luau"
+
+[widget.actions]
+middle = "none"
+
+[[panel]]
+id        = "menu"
+entry     = "menu.luau"
+width     = 300
+height    = 430
+placement = "floating"
+position  = "auto"
+open_near_click = true

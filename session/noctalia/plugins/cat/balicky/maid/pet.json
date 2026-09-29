@@ -1,0 +1,225 @@
+{
+ "name": "Foxy Maid",
+ "about": "líščia slúžka: zametá lištu, oprašuje a leští okná, dá si kávu a selfie ♥",
+ "profile": "maid",
+ "flyer": false,
+ "facing": "none",
+ "idle": [
+  "predklon-3",
+  "srdiecka-1",
+  "zazera-1"
+ ],
+ "sleep": "zivne-4",
+ "move": [
+  "padak-1",
+  "predklon-3"
+ ],
+ "closeupAt": "right",
+ "door": {
+  "out": "dvere-von",
+  "in": "dvere-dnu"
+ },
+ "parachute": "padak",
+ "offended": "urazena",
+ "glare": "zazera",
+ "hearts": "srdiecka",
+ "anim": {
+  "zameta": {
+   "frames": [
+    "zameta-1",
+    "zameta-2",
+    "zameta-3",
+    "zameta-4"
+   ],
+   "fps": 6,
+   "loop": true
+  },
+  "oprasuje": {
+   "frames": [
+    "oprasuje-1",
+    "oprasuje-2",
+    "oprasuje-3",
+    "oprasuje-4"
+   ],
+   "fps": 6,
+   "loop": true
+  },
+  "lesti": {
+   "frames": [
+    "lesti-1",
+    "lesti-2",
+    "lesti-3",
+    "lesti-4"
+   ],
+   "fps": 6,
+   "loop": true
+  },
+  "predklon": {
+   "frames": [
+    "predklon-1",
+    "predklon-2",
+    "predklon-3"
+   ],
+   "fps": 4,
+   "loop": false
+  },
+  "selfie": {
+   "frames": [
+    "selfie-1",
+    "selfie-2",
+    "selfie-3",
+    "selfie-4"
+   ],
+   "fps": 3,
+   "loop": true
+  },
+  "srdiecka": {
+   "frames": [
+    "srdiecka-1",
+    "srdiecka-2",
+    "srdiecka-3"
+   ],
+   "fps": 3,
+   "loop": false
+  },
+  "kava": {
+   "frames": [
+    "kava-1",
+    "kava-2",
+    "kava-3",
+    "kava-4"
+   ],
+   "fps": 2,
+   "loop": true
+  },
+  "zivne": {
+   "frames": [
+    "zivne-1",
+    "zivne-2",
+    "zivne-3",
+    "zivne-4"
+   ],
+   "fps": 3,
+   "loop": false
+  },
+  "nahliada": {
+   "frames": [
+    "nahliada-1",
+    "nahliada-2"
+   ],
+   "fps": 2,
+   "loop": true
+  },
+  "dvere-von": {
+   "frames": [
+    "dvere-von-1",
+    "dvere-von-2",
+    "dvere-von-3",
+    "dvere-von-4"
+   ],
+   "fps": 4,
+   "loop": false
+  },
+  "dvere-dnu": {
+   "frames": [
+    "dvere-dnu-1",
+    "dvere-dnu-2",
+    "dvere-dnu-3",
+    "dvere-dnu-4"
+   ],
+   "fps": 4,
+   "loop": false
+  },
+  "padak": {
+   "frames": [
+    "padak-1",
+    "padak-2",
+    "padak-3"
+   ],
+   "fps": 3,
+   "loop": false
+  },
+  "urazena": {
+   "frames": [
+    "urazena-1",
+    "urazena-2",
+    "urazena-3",
+    "urazena-4"
+   ],
+   "fps": 3,
+   "loop": true
+  },
+  "zazera": {
+   "frames": [
+    "zazera-1",
+    "zazera-2"
+   ],
+   "fps": 2,
+   "loop": true
+  }
+ },
+ "closeup": [
+  "vykukne-1",
+  "vykukne-2",
+  "vykukne-3"
+ ],
+ "frames": [
+  "dvere-dnu-1",
+  "dvere-dnu-2",
+  "dvere-dnu-3",
+  "dvere-dnu-4",
+  "dvere-von-1",
+  "dvere-von-2",
+  "dvere-von-3",
+  "dvere-von-4",
+  "hero",
+  "kava-1",
+  "kava-2",
+  "kava-3",
+  "kava-4",
+  "lesti-1",
+  "lesti-2",
+  "lesti-3",
+  "lesti-4",
+  "nahliada-1",
+  "nahliada-2",
+  "oprasuje-1",
+  "oprasuje-2",
+  "oprasuje-3",
+  "oprasuje-4",
+  "padak-1",
+  "padak-2",
+  "padak-3",
+  "predklon-1",
+  "predklon-2",
+  "predklon-3",
+  "sedi",
+  "selfie-1",
+  "selfie-2",
+  "selfie-3",
+  "selfie-4",
+  "srdce",
+  "srdiecka-1",
+  "srdiecka-2",
+  "srdiecka-3",
+  "stoji",
+  "urazena-1",
+  "urazena-2",
+  "urazena-3",
+  "urazena-4",
+  "vykukne-1",
+  "vykukne-2",
+  "vykukne-3",
+  "zameta-1",
+  "zameta-2",
+  "zameta-3",
+  "zameta-4",
+  "zazera-1",
+  "zazera-2",
+  "zivne-1",
+  "zivne-2",
+  "zivne-3",
+  "zivne-4",
+  "zmurk"
+ ]
+}

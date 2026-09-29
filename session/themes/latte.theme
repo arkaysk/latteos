@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Latte
+desc = Predvolená · teplé tmavé sklo · jemné animácie
+mode = dark
+palette = Latte
+material = sklo
+effects = jemne
+border_active = E4B283
+border_inactive = 4A3B30
+wallpaper = latteos-wallpaper2.jpg

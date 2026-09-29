@@ -1,0 +1,8 @@
+[package]
+name = "latte-hw"
+description = "Detekcia hardvéru a grafiky pre LatteOS (latte-boot, neskôr Device Manager)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

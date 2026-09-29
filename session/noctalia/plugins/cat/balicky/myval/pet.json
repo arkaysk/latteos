@@ -1,0 +1,25 @@
+{
+ "name": "Mýval",
+ "about": "zbiera drobnosti a ukrýva sa",
+ "profile": "turista",
+ "flyer": false,
+ "facing": "none",
+ "idle": [
+  "sedi",
+  "sedi-2"
+ ],
+ "sleep": "spi",
+ "move": [
+  "chodza",
+  "chodza-2"
+ ],
+ "frames": [
+  "chodza",
+  "chodza-2",
+  "hero",
+  "plazi",
+  "sedi",
+  "sedi-2",
+  "spi"
+ ]
+}

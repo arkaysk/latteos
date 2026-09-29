@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Onyx
+desc = Tmavý priesvitný kameň · svetlo presvitá cez žilky
+mode = dark
+palette = LatteOnyx
+material = kamen
+effects = jemne
+border_active = D9C7B0
+border_inactive = 4A443E
+wallpaper = latteos-wallpaper1.jpg

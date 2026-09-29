@@ -1,0 +1,256 @@
+#!/usr/bin/python3
+"""latte-ai — jedno AI rozhranie LatteOS pre Text Bar, Nastavenia a skripty.
+
+Poskytovatelia (~/.config/latteos/ai.toml, píšu ho Nastavenia › Softvér › AI):
+  lokalne  Ollama na tomto PC (http://127.0.0.1:11434)
+  domaci   domáci server s OpenAI-kompatibilným API (LM Studio, llama.cpp, vLLM, Ollama);
+           voliteľne cez SSH tunel (ssh = "pouzivatel@server"), ak server nie je otvorený do siete
+  cloud    veľké AI: anthropic | openai | gemini | mistral (kľúč v ~/.config/latteos/ai-keys, 0600)
+  web      prihlásenie v prehliadači ako widget v mobile (web = claude | chatgpt | perplexity | copilot):
+           otázka sa otvorí na stránke AI s tvojím prihlásením, bez API kľúča
+  ziadna   Bez AI: LatteOS neponúka AI nikde (Text Bar bez režimu AI, panel Super+I vypnutý)
+
+  latte-ai status            poskytovateľ, model, dostupnosť (jeden riadok key=value na riadok)
+  latte-ai models            modely poskytovateľa (id<TAB>stav)
+  latte-ai ask OTÁZKA        odpoveď na stdout (bez <think> blokov); pri „web“ otvorí stránku AI
+  latte-ai open [OTÁZKA]     otvorí webový chat zvolenej AI (aj s otázkou) v prehliadači
+  latte-ai chat SÚBOR.json   rozhovor: [{"role":"user"|"assistant","content":…}, …] → ďalšia odpoveď na stdout
+  latte-ai set KĽÚČ HODNOTA  zapíše voľbu do ai.toml (provider, url, model, ssh, cloud, cloud_model)
+  latte-ai key SLUŽBA KĽÚČ   uloží API kľúč cloudu
+"""
+import json, os, re, socket, subprocess, sys, time, urllib.request, urllib.error
+
+HOME = os.environ.get("HOME", "/")
+CFG = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "latteos")
+CONF = os.path.join(CFG, "ai.toml")
+KEYS = os.path.join(CFG, "ai-keys")
+RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+
+DEFAULTS = {
+    "provider": "domaci",
+    "url": "http://192.168.56.1:1234/v1",      # hostiteľ VirtualBoxu (LM Studio)
+    "model": "",                                  # prázdne = model, ktorý má server načítaný
+    "ssh": "",
+    "cloud": "anthropic",
+    "cloud_model": "",
+    "web": "claude",
+    "system": ("Si asistent v LatteOS. LatteOS je desktopová Linux distribúcia na Fedore pre bežných ľudí a hráčov: "
+               "Hyprland (nekonečná páska okien), shell Noctalia so spodnou lištou z ostrovov, témy Latte, Súbory, "
+               "Nastavenia, Monitor, App Manager (Flatpak, RPM, kontrola „Bude to fungovať?“), režimy NORMAL a SAFE. "
+               "Odpovedaj stručne a po slovensky, ak sa ťa používateľ pýta po slovensky."),
+}
+CLOUD = {   # predvolené modely a adresy veľkých AI
+    "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-5"),
+    "openai":    ("https://api.openai.com/v1", "gpt-5-mini"),
+    "gemini":    ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"),
+    "mistral":   ("https://api.mistral.ai/v1", "mistral-large-latest"),
+}
+
+
+def load():
+    c = dict(DEFAULTS)
+    try:
+        for line in open(CONF, encoding="utf-8"):
+            m = re.match(r'^\s*(\w+)\s*=\s*"(.*)"\s*$', line)
+            if m and m.group(1) in c:
+                c[m.group(1)] = m.group(2).replace('\\"', '"')
+    except OSError:
+        pass
+    return c
+
+
+def save(c):
+    os.makedirs(CFG, exist_ok=True)
+    tmp = CONF + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("# LatteOS AI (Nastavenia › Softvér › AI, alebo latte-ai set)\n")
+        for k in DEFAULTS:
+            f.write('%s = "%s"\n' % (k, str(c[k]).replace('"', '\\"')))
+    os.replace(tmp, CONF)
+
+
+def keys():
+    k = {}
+    try:
+        for line in open(KEYS, encoding="utf-8"):
+            if "=" in line:
+                a, b = line.split("=", 1)
+                k[a.strip()] = b.strip()
+    except OSError:
+        pass
+    return k
+
+
+def http(url, body=None, headers=None, timeout=8):
+    h = {"Content-Type": "application/json"}
+    h.update(headers or {})
+    data = json.dumps(body).encode() if body is not None else None
+    with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=h), timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def tunnel(c):
+    """SSH tunel na domáci server: lokálny port → port zo server URL na serveri. Vráti prepísanú URL."""
+    m = re.match(r"^(https?)://([^/:]+)(?::(\d+))?(/.*)?$", c["url"])
+    if not m:
+        return c["url"]
+    scheme, _host, port, path = m.group(1), m.group(2), int(m.group(3) or (443 if m.group(1) == "https" else 80)), m.group(4) or ""
+    local = 20000 + (port % 10000)
+    try:
+        socket.create_connection(("127.0.0.1", local), 0.3).close()
+    except OSError:
+        sock = os.path.join(RUN, "latte-ai-ssh")
+        subprocess.run(["ssh", "-fN", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+                        "-o", "ControlMaster=auto", "-o", "ControlPath=" + sock, "-o", "ControlPersist=30m",
+                        "-L", "127.0.0.1:%d:127.0.0.1:%d" % (local, port), c["ssh"]],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        for _ in range(20):
+            try:
+                socket.create_connection(("127.0.0.1", local), 0.3).close()
+                break
+            except OSError:
+                time.sleep(0.2)
+    return "%s://127.0.0.1:%d%s" % (scheme, local, path)
+
+
+WEB = {   # webové chaty s prihlásením v prehliadači (otázka v adrese)
+    "claude":     ("Claude", "https://claude.ai/new?q="),
+    "chatgpt":    ("ChatGPT", "https://chatgpt.com/?q="),
+    "perplexity": ("Perplexity", "https://www.perplexity.ai/search?q="),
+    "copilot":    ("Copilot", "https://copilot.microsoft.com/?q="),
+}
+
+
+def web_open(c, q):
+    import urllib.parse
+    name, url = WEB.get(c["web"], WEB["claude"])
+    subprocess.Popen(["xdg-open", url + urllib.parse.quote(q)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return name
+
+
+def endpoint(c):
+    """(základná URL OpenAI API, hlavičky, predvolený model) pre zvoleného poskytovateľa."""
+    p = c["provider"]
+    if p == "lokalne":
+        return "http://127.0.0.1:11434/v1", {}, c["model"]
+    if p == "cloud":
+        base, model = CLOUD.get(c["cloud"], CLOUD["openai"])
+        key = keys().get(c["cloud"], "")
+        if c["cloud"] == "anthropic":
+            return base, {"x-api-key": key, "anthropic-version": "2023-06-01"}, c["cloud_model"] or model
+        return base, {"Authorization": "Bearer " + key}, c["cloud_model"] or model
+    url = tunnel(c) if c["ssh"] else c["url"]
+    return url.rstrip("/"), {}, c["model"]
+
+
+def models(c):
+    base, hdr, _ = endpoint(c)
+    out = []
+    if c["provider"] == "domaci":   # LM Studio vie povedať aj stav (načítaný / nie)
+        try:
+            for m in http(base.rsplit("/v1", 1)[0] + "/api/v0/models", headers=hdr)["data"]:
+                if m.get("type") in ("llm", "vlm"):
+                    out.append((m["id"], m.get("state", "")))
+            return out
+        except Exception:
+            pass
+    for m in http(base + "/models", headers=hdr)["data"]:
+        if "embed" not in m["id"]:
+            out.append((m["id"], ""))
+    return out
+
+
+def pick(c):
+    base, hdr, model = endpoint(c)
+    if model:
+        return model
+    ms = models(c)
+    loaded = [m for m, s in ms if s == "loaded"]
+    if loaded:
+        return loaded[0]
+    if c["provider"] == "lokalne" and ms:
+        return ms[0][0]
+    return ""
+
+
+def ask(c, q, history=None):
+    base, hdr, _ = endpoint(c)
+    model = pick(c)
+    if not model:
+        raise RuntimeError("Na serveri nie je načítaný žiadny model. Vyber ho v Nastaveniach › AI.")
+    msgs = history if history else [{"role": "user", "content": q}]
+    msgs = [{"role": m["role"], "content": str(m["content"])} for m in msgs if m.get("role") in ("user", "assistant")][-20:]
+    if c["provider"] == "cloud" and c["cloud"] == "anthropic":
+        r = http(base + "/messages", {"model": model, "max_tokens": 1024, "system": c["system"], "messages": msgs}, hdr, 120)
+        text = "".join(b.get("text", "") for b in r.get("content", []))
+    else:
+        r = http(base + "/chat/completions", {"model": model, "messages": [{"role": "system", "content": c["system"]}] + msgs,
+                                              "temperature": 0.4}, hdr, 180)
+        text = r["choices"][0]["message"].get("content") or ""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip(), model
+
+
+def main(a):
+    c = load()
+    cmd = a[0] if a else "status"
+    try:
+        if cmd == "status" and c["provider"] in ("web", "ziadna"):
+            print("provider=" + c["provider"])
+            if c["provider"] == "ziadna":
+                print("target=Bez AI"); print("model="); print("ok=0"); print("disabled=1"); print("error=AI je vypnutá (Nastavenia › Softvér › AI)")
+            else:
+                print("target=" + WEB.get(c["web"], WEB["claude"])[0] + " v prehliadači (tvoje prihlásenie)")
+                print("model=" + WEB.get(c["web"], WEB["claude"])[0]); print("ok=1"); print("web=1")
+        elif cmd == "status":
+            print("provider=" + c["provider"])
+            print("target=" + ({"lokalne": "Ollama (tento PC)", "cloud": c["cloud"]}.get(c["provider"]) or c["url"] + (" cez ssh " + c["ssh"] if c["ssh"] else "")))
+            try:
+                print("model=" + (pick(c) or ""))
+                print("ok=1")
+            except Exception as e:
+                print("model=")
+                print("ok=0")
+                print("error=" + str(getattr(e, "reason", e)).replace("\n", " "))
+        elif cmd == "models":
+            for m, s in models(c):
+                print(m + "\t" + s)
+        elif cmd == "open" or (cmd == "ask" and c["provider"] == "web"):
+            if c["provider"] == "ziadna":
+                raise RuntimeError("AI je vypnutá (Bez AI)")
+            print("Otvoril som " + web_open(c, " ".join(a[1:])) + " v prehliadači.")
+        elif cmd == "ask":
+            if c["provider"] == "ziadna":
+                raise RuntimeError("AI je vypnutá (Bez AI)")
+            text, _model = ask(c, " ".join(a[1:]))
+            print(text)
+        elif cmd == "chat" and len(a) == 2 and c["provider"] in ("web", "ziadna"):
+            raise RuntimeError("AI je vypnutá (Bez AI)" if c["provider"] == "ziadna" else "Webová AI odpovedá v prehliadači: latte-ai open")
+        elif cmd == "chat" and len(a) == 2:
+            with open(a[1], encoding="utf-8") as f:
+                history = json.load(f)
+            text, _model = ask(c, "", history)
+            print(text)
+        elif cmd == "set" and len(a) == 3 and a[1] in DEFAULTS:
+            c[a[1]] = a[2]
+            save(c)
+        elif cmd == "key" and len(a) == 3:
+            k = keys()
+            k[a[1]] = a[2]
+            os.makedirs(CFG, exist_ok=True)
+            fd = os.open(KEYS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.writelines("%s=%s\n" % kv for kv in k.items())
+        else:
+            print(__doc__.strip(), file=sys.stderr)
+            return 2
+    except urllib.error.HTTPError as e:
+        print("AI server vrátil chybu %d: %s" % (e.code, e.read().decode(errors="replace")[:300]), file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(str(getattr(e, "reason", e)), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

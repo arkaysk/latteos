@@ -1,0 +1,24 @@
+#!/bin/sh
+# latte-ponuka zabezpecenie | vypnut | projekcia | win-x [X Y] | okno [X Y [ADRESA]] | okno-rel X Y | rozlozenia X Y ADRESA [TLAČIDLO] — systémové ponuky ako vo Windows (apps/ponuka.qml).
+# ponuka.qml beží na pozadí (rýchle otvorenie cez IPC Quickshellu); ak nebeží, spustí sa a ponuka sa otvorí po štarte.
+qml=/usr/share/latteos/apps/ponuka.qml
+kind="${1:-win-x}"; shift
+case "$kind" in
+    zabezpecenie|vypnut|projekcia) call="$kind" ;;
+    win-x)  call="winx ${1:-12} ${2:-9999}" ;;                     # predvolene vľavo dole pri dlaždici aplikácií
+    okno)   call="okno ${1:-0} ${2:-0} ${3:-}" ;;
+    okno-rel) call="oknoRel ${1:-0} ${2:-0}" ;;
+    rozlozenia) [ "${4:-1}" = 1 ] || exit 0                          # iba nad □ (hyprbars: 0 ✕, 1 □, 2 –)
+                [ -e "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/bez-listy-rozlozeni" ] && exit 0   # Nastavenia › Okná
+                call="rozlozenia ${1:-0} ${2:-0} ${3:-}" ;;                    # súradnice v aktívnom okne (vlastná hlavička aplikácií LatteOS)
+    *) echo "neznáma ponuka: $kind"; exit 1 ;;
+esac
+pid=$(pgrep -f "^qs -n -p $qml" | head -1)
+if [ -z "$pid" ]; then
+    setsid latte-app ponuka >/dev/null 2>&1 &
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        sleep 0.25; pid=$(pgrep -f "^qs -n -p $qml" | head -1); [ -n "$pid" ] && qs ipc --pid "$pid" show >/dev/null 2>&1 && break
+    done
+fi
+# shellcheck disable=SC2086
+exec qs ipc --pid "$pid" call ponuka $call

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor
+GenericName=Správca procesov
+Comment=Živý stav systému, procesy, čo sa spúšťa po štarte, telemetria
+Exec=latte-app monitor
+Icon=utilities-system-monitor
+Categories=System;Monitor;
+Keywords=procesy;task manager;monitor;cpu;pamat;autorun;

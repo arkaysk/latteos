@@ -1,0 +1,52 @@
+diff --git a/src/protocols/LinuxDMABUF.cpp b/src/protocols/LinuxDMABUF.cpp
+index 797254b..881f399 100644
+--- a/src/protocols/LinuxDMABUF.cpp
++++ b/src/protocols/LinuxDMABUF.cpp
+@@ -4,6 +4,7 @@
+ #include <tuple>
+ #include "../helpers/MiscFunctions.hpp"
+ #include <sys/mman.h>
++#include <cstring>
+ #include <xf86drm.h>
+ #include <fcntl.h>
+ #include <sys/stat.h>
+@@ -260,6 +261,30 @@ void CLinuxDMABUFParamsResource::create(uint32_t id) {
+     m_createdBuffer = buf;
+ }
+ 
++#define DRM_VMW_UNREF_SURFACE 10
++
++struct drmVmwSurfaceArg {
++    int32_t  sid;
++    uint32_t handleType;
++};
++
++// vmwgfx prime-imports surface-backed dmabufs as TTM handles, not GEM, so
++// GEM_CLOSE fails with EINVAL; close them via DRM_VMW_UNREF_SURFACE instead.
++static int closeVmwGFXHandle(int fd, uint32_t handle) {
++    bool          isVmwgfx;
++    drmVersionPtr version;
++
++    version  = drmGetVersion(fd);
++    isVmwgfx = version && version->name && strncmp(version->name, "vmwgfx", version->name_len) == 0;
++    if (version)
++        drmFreeVersion(version);
++    if (!isVmwgfx)
++        return -1;
++
++    struct drmVmwSurfaceArg arg = {(int32_t)handle, 0};
++    return drmCommandWrite(fd, DRM_VMW_UNREF_SURFACE, &arg, sizeof(arg));
++}
++
+ bool CLinuxDMABUFParamsResource::commence() {
+     if (!PROTO::linuxDma->m_mainDeviceFD.isValid())
+         return true;
+@@ -272,7 +297,7 @@ bool CLinuxDMABUFParamsResource::commence() {
+             return false;
+         }
+ 
+-        if (drmCloseBufferHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle)) {
++        if (drmCloseBufferHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle) != 0 && closeVmwGFXHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle) != 0) {
+             LOG(Log::ERR, "Failed to close dmabuf handle");
+             return false;
+         }

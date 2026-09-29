@@ -1,0 +1,10 @@
+# LatteOS téma — vygeneroval make-themes.py
+name = Klasik – herný launcher
+desc = Inšpirované Steamom · tmavomodré plochy, modrý akcent
+mode = dark
+palette = LatteLauncher
+material = ziadny
+effects = ziadne
+border_active = 66C0F4
+border_inactive = 2A475E
+wallpaper = 

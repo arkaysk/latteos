@@ -1,0 +1,535 @@
+#!/usr/bin/python3
+"""latte-inspektor — Inšpektor siete LatteOS (ako „Network Inspector“ v ESET Smart Security): čo všetko je v sieti
+okolo tohto počítača, čo ktoré zariadenie ponúka a kam sa dá poslať zvuk. Bez práv správcu a bez ďalších balíkov.
+
+  latte-inspektor sken            JSON: tento počítač (adresa, prenos, aplikácie so spojeniami), brána, zariadenia v sieti
+                                  (IP, MAC, výrobca, meno, druh, služby, prvýkrát videné / nové) a ciele zvuku
+  latte-inspektor posledny        JSON posledného skenu z vyrovnávacej pamäte (okamžite, bez skenovania)
+  latte-inspektor oznac KĽÚČ MENO DRUH   identifikovať zariadenie: vlastné meno a druh (ikona/účel); prázdne = automaticky
+                                  druhy: router tv audio printer nas iot phone pc console camera device
+  latte-inspektor zabudni KĽÚČ    odstrániť zariadenie z histórie (aj jeho meno)
+  latte-inspektor moja-siet ano|nie   označiť túto sieť (podľa MAC brány) ako „Moja sieť“ — iba tam sa hlásia nové zariadenia
+  latte-inspektor airplay zapni|vypni   prijímače AirPlay (a iné RAOP) v sieti sa ukážu ako bežné zvukové výstupy
+                                  (PipeWire module-raop-discover); stav: latte-inspektor airplay
+
+Ako sken funguje (asi 4 s, iba v miestnej sieti /22 a menšej):
+  1. na každú adresu podsiete sa pošle prázdny UDP paket → jadro sa pýta ARP; kto odpovie, je v tabuľke susedov
+     (odpovie aj zariadenie, ktoré ignoruje ping),
+  2. mDNS / DNS-SD (Bonjour, Avahi): mená a služby — AirPlay, Chromecast, Spotify Connect, tlačiarne, SMB, SSH…,
+  3. SSDP / UPnP: televízory a receivery (DLNA MediaRenderer), routery, NAS — meno a model z popisu zariadenia,
+  4. výrobca podľa MAC z /usr/share/hwdata/oui.txt, história v ~/.cache/latteos/inspektor.json (nové zariadenie).
+Zvuk do siete: AirPlay/RAOP a Snapcast vie PipeWire priamo; Spotify Connect ponúka sama aplikácia Spotify (ikona
+zariadení); DLNA/UPnP televízory a receivery cez pa-dlna (GPL-3.0, doinštaluje App Manager); Chromecast cez
+mkchromecast (MIT) — obe iba ako poznámka, kým ich neoveríme na reálnom HW.
+"""
+import concurrent.futures, ipaddress, json, os, re, socket, struct, subprocess, sys, time, urllib.parse, urllib.request
+import xml.etree.ElementTree as ET
+
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "latteos")
+HIST = os.path.join(CACHE, "inspektor.json")
+USER = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "latteos", "siet-zariadenia.json")
+KINDS = ("router", "tv", "audio", "printer", "nas", "iot", "phone", "pc", "console", "camera", "device")
+LAST = os.path.join(CACHE, "inspektor-posledny.json")
+SERVICES = {
+    "_airplay._tcp": ("AirPlay", "audio"), "_raop._tcp": ("AirPlay zvuk", "audio"), "_googlecast._tcp": ("Chromecast", "cast"),
+    "_spotify-connect._tcp": ("Spotify Connect", "audio"), "_snapcast._tcp": ("Snapcast", "audio"), "_pulse-server._tcp": ("PulseAudio", "audio"),
+    "_ipp._tcp": ("Tlač (IPP)", "print"), "_ipps._tcp": ("Tlač (IPPS)", "print"), "_printer._tcp": ("Tlač (LPD)", "print"), "_pdl-datastream._tcp": ("Tlač (RAW)", "print"),
+    "_uscan._tcp": ("Skener", "print"), "_smb._tcp": ("Zdieľané súbory (SMB)", "files"), "_afpovertcp._tcp": ("Zdieľané súbory (AFP)", "files"),
+    "_nfs._tcp": ("NFS", "files"), "_sftp-ssh._tcp": ("SFTP", "files"), "_ssh._tcp": ("SSH", "shell"), "_workstation._tcp": ("Počítač", "pc"),
+    "_http._tcp": ("Webové rozhranie", "web"), "_https._tcp": ("Webové rozhranie", "web"), "_home-assistant._tcp": ("Home Assistant", "home"),
+    "_hap._tcp": ("HomeKit", "home"), "_matter._tcp": ("Matter", "home"), "_amzn-wplay._tcp": ("Amazon Alexa", "audio"),
+    "_sonos._tcp": ("Sonos", "audio"), "_daap._tcp": ("iTunes knižnica", "files"), "_companion-link._tcp": ("Apple zariadenie", "pc"),
+    "_device-info._tcp": ("", ""), "_rtsp._tcp": ("Kamera (RTSP)", "camera"), "_adisk._tcp": ("Time Machine", "files"), "_steam._udp": ("Steam", "pc"),
+}
+
+
+def sh(argv, timeout=10):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 127, ""
+
+
+def load(p, d):
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return d
+
+
+def save(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(p + ".tmp", p)
+
+
+# ── tento počítač a podsieť ─────────────────────────────────────────────────────────────────────────────
+def local():
+    routes = json.loads(sh(["ip", "-j", "route", "show", "default"])[1] or "[]")
+    if not routes:
+        return None
+    gw, dev = routes[0].get("gateway"), routes[0].get("dev")
+    addrs = json.loads(sh(["ip", "-j", "addr", "show", "dev", dev])[1] or "[]")
+    ip, prefix, mac = None, 24, ""
+    for a in addrs:
+        mac = a.get("address", "")
+        for ai in a.get("addr_info", []):
+            if ai.get("family") == "inet":
+                ip, prefix = ai["local"], ai["prefixlen"]
+                break
+    if not ip:
+        return None
+    rx = int(open("/sys/class/net/%s/statistics/rx_bytes" % dev).read())
+    tx = int(open("/sys/class/net/%s/statistics/tx_bytes" % dev).read())
+    wifi = os.path.isdir("/sys/class/net/%s/wireless" % dev)
+    netname = ""
+    for line in sh(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])[1].splitlines():
+        f = re.split(r"(?<!\\):", line)
+        if len(f) >= 2 and f[1] == dev:
+            netname = f[0].replace("\\:", ":")
+    return {"iface": dev, "ip": ip, "prefix": prefix, "mac": mac, "gateway": gw, "rx": rx, "tx": tx, "wifi": wifi,
+            "host": socket.gethostname(), "netname": netname}
+
+
+def apps_online():
+    """Aplikácie tohto počítača s otvorenými spojeniami do siete (ss): kto s kým hovorí."""
+    out = {}
+    for line in sh(["ss", "-tunpH", "state", "established"])[1].splitlines():
+        m = re.search(r'users:\(\("([^"]+)"', line)
+        f = line.split()
+        if not m or len(f) < 5:
+            continue
+        peer = f[-2] if f[-1].startswith("users:") else f[-1]
+        host = peer.rsplit(":", 1)[0].strip("[]")
+        if host.startswith("127.") or host in ("::1",):
+            continue
+        a = out.setdefault(m.group(1), {"app": m.group(1), "spojenia": 0, "ciele": set()})
+        a["spojenia"] += 1
+        a["ciele"].add(host)
+    return sorted(({"app": a["app"], "spojenia": a["spojenia"], "ciele": len(a["ciele"])} for a in out.values()),
+                  key=lambda a: -a["spojenia"])[:12]
+
+
+# ── 1. susedia (ARP) ────────────────────────────────────────────────────────────────────────────────────
+def sweep(me):
+    net = ipaddress.ip_network("%s/%d" % (me["ip"], me["prefix"]), strict=False)
+    if net.num_addresses <= 1024:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for h in net.hosts():
+            if str(h) != me["ip"]:
+                try:
+                    s.sendto(b"", (str(h), 9))
+                except OSError:
+                    pass
+        s.close()
+        time.sleep(2.2)
+    found = {}
+    for n in json.loads(sh(["ip", "-j", "-4", "neigh", "show", "dev", me["iface"]])[1] or "[]"):
+        if n.get("lladdr") and "FAILED" not in n.get("state", []) and "INCOMPLETE" not in n.get("state", []):
+            found[n["dst"]] = {"ip": n["dst"], "mac": n["lladdr"].lower()}
+    return found
+
+
+# ── 2. mDNS / DNS-SD ────────────────────────────────────────────────────────────────────────────────────
+def dns_name(buf, off):
+    labels, jumped, end = [], False, off
+    for _ in range(64):
+        ln = buf[off]
+        if ln == 0:
+            off += 1
+            break
+        if ln & 0xC0 == 0xC0:
+            if not jumped:
+                end = off + 2
+            off = ((ln & 0x3F) << 8) | buf[off + 1]
+            jumped = True
+            continue
+        labels.append(buf[off + 1:off + 1 + ln].decode("utf-8", "replace"))
+        off += 1 + ln
+    return ".".join(labels), (end if jumped else off)
+
+
+def dns_query(names):
+    q = struct.pack(">HHHHHH", 0, 0, len(names), 0, 0, 0)
+    for n in names:
+        q += b"".join(bytes([len(p)]) + p.encode() for p in n.split(".")) + b"\0" + struct.pack(">HH", 12, 0x8001)
+    return q
+
+
+def mdns(wait=2.5):
+    """Pošle otázky DNS-SD a pozbiera odpovede: {ip: {"name", "services": [(typ, meno, port)]}}."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    s.settimeout(0.3)
+    types = ["_services._dns-sd._udp.local"] + [t + ".local" for t in SERVICES]
+    for i in range(0, len(types), 12):
+        try:
+            s.sendto(dns_query(types[i:i + 12]), ("224.0.0.251", 5353))
+        except OSError:
+            pass
+    ptr, srv, addr, txt = {}, {}, {}, {}
+    end = time.time() + wait
+    extra_sent = set()
+    while time.time() < end:
+        try:
+            buf, src = s.recvfrom(9000)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        try:
+            _, flags, qd, an, ns, ar = struct.unpack(">HHHHHH", buf[:12])
+            off = 12
+            for _ in range(qd):
+                _, off = dns_name(buf, off)
+                off += 4
+            for _ in range(an + ns + ar):
+                name, off = dns_name(buf, off)
+                rtype, _, _, rdlen = struct.unpack(">HHIH", buf[off:off + 10])
+                off += 10
+                rd = off
+                if rtype == 12:                                  # PTR
+                    target, _ = dns_name(buf, rd)
+                    if name == "_services._dns-sd._udp.local":
+                        if target not in extra_sent:
+                            extra_sent.add(target)
+                            try:
+                                s.sendto(dns_query([target]), ("224.0.0.251", 5353))
+                            except OSError:
+                                pass
+                    else:
+                        ptr.setdefault(name, set()).add(target)
+                elif rtype == 33:                                # SRV
+                    port = struct.unpack(">H", buf[rd + 4:rd + 6])[0]
+                    host, _ = dns_name(buf, rd + 6)
+                    srv[name] = (host, port)
+                elif rtype == 1 and rdlen == 4:                  # A
+                    addr[name] = socket.inet_ntoa(buf[rd:rd + 4])
+                elif rtype == 16:                                # TXT
+                    t, p = {}, rd
+                    while p < rd + rdlen:
+                        ln = buf[p]
+                        kv = buf[p + 1:p + 1 + ln].decode("utf-8", "replace")
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            t[k] = v
+                        p += 1 + ln
+                    txt[name] = t
+                off = rd + rdlen
+            # adresa odosielateľa pre záznamy bez A
+            for n in list(srv):
+                h = srv[n][0]
+                if h not in addr and src[0] and not src[0].startswith("127."):
+                    addr.setdefault(h, src[0])
+        except (struct.error, IndexError):
+            continue
+    s.close()
+    out = {}
+    for stype, insts in ptr.items():
+        base = stype.replace(".local", "")
+        for inst in insts:
+            host, port = srv.get(inst, ("", 0))
+            ip = addr.get(host)
+            if not ip:
+                continue
+            label = inst.replace("." + stype, "")
+            label = re.sub(r"^[0-9A-F]{12}@", "", label)             # RAOP: MAC@meno
+            t = txt.get(inst, {})
+            if base == "_googlecast._tcp" and t.get("fn"):
+                label = t["fn"]
+            d = out.setdefault(ip, {"name": "", "services": [], "model": t.get("md") or t.get("model") or t.get("am") or ""})
+            if not d["name"] or base in ("_googlecast._tcp", "_airplay._tcp", "_device-info._tcp"):
+                d["name"] = label if base != "_device-info._tcp" else (d["name"] or label)
+            d["model"] = d["model"] or t.get("md") or t.get("model") or ""
+            d["services"].append({"type": base, "name": label, "port": port})
+    return out
+
+
+# ── 3. SSDP / UPnP ──────────────────────────────────────────────────────────────────────────────────────
+def ssdp(wait=2.0):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0.3)
+    msg = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: ssdp:all\r\n\r\n".encode()
+    for _ in range(2):
+        try:
+            s.sendto(msg, ("239.255.255.250", 1900))
+        except OSError:
+            pass
+    locs, sts = {}, {}
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            buf, src = s.recvfrom(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        h = dict((k.strip().lower(), v.strip()) for k, v in (l.split(":", 1) for l in buf.decode("utf-8", "replace").split("\r\n") if ":" in l))
+        if h.get("location"):
+            locs.setdefault(src[0], set()).add(h["location"])
+        sts.setdefault(src[0], set()).add(h.get("st", ""))
+    s.close()
+
+    # popis zariadenia čítame iba bezpečne (secalfaanalyze.md P2): LOCATION si vymyslí ktokoľvek v LAN, preto iba http,
+    # iba na IP adresu, ktorá odpovedala, bez presmerovaní a bez proxy (inak by šlo o localhost, iný cieľ či file://)
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+
+    def safe(loc, ip):
+        try:
+            u = urllib.parse.urlsplit(loc)
+            return u.scheme == "http" and u.hostname == ip and (u.port or 80) > 0
+        except ValueError:
+            return False
+
+    def describe(ip):
+        info = {"name": "", "model": "", "maker": "", "types": sorted(t for t in sts.get(ip, ()) if t)}
+        for loc in sorted(locs.get(ip, ()))[:3]:
+            if not safe(loc, ip):
+                continue
+            try:
+                with opener.open(loc, timeout=1.5) as r:
+                    if r.status != 200:
+                        continue
+                    x = ET.fromstring(r.read(200000))
+            except Exception:
+                continue
+            ns = {"d": "urn:schemas-upnp-org:device-1-0"}
+            dv = x.find("d:device", ns)
+            if dv is None:
+                continue
+            info["name"] = info["name"] or (dv.findtext("d:friendlyName", "", ns) or "").strip()
+            info["model"] = info["model"] or (dv.findtext("d:modelName", "", ns) or "").strip()
+            info["maker"] = info["maker"] or (dv.findtext("d:manufacturer", "", ns) or "").strip()
+            for t in x.iter("{urn:schemas-upnp-org:device-1-0}deviceType"):
+                info["types"].append(t.text or "")
+        return ip, info
+    out = {}
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        for ip, info in ex.map(describe, list(set(locs) | set(sts))):
+            out[ip] = info
+    return out
+
+
+# ── 4. výrobca, meno, druh ──────────────────────────────────────────────────────────────────────────────
+_oui = None
+def vendor(mac):
+    global _oui
+    if _oui is None:
+        _oui = {}
+        try:
+            with open("/usr/share/hwdata/oui.txt", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = re.match(r"^([0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2})\s+\(hex\)\s+(.+)$", line)
+                    if m:
+                        _oui[m.group(1).replace("-", ":").lower()] = m.group(2).strip()
+        except OSError:
+            pass
+    if not mac:
+        return ""
+    if int(mac[:2], 16) & 2:
+        return "súkromná adresa (náhodná MAC)"
+    v = _oui.get(mac[:8], "")
+    return re.sub(r",?\s+(Inc|Ltd|Co|Corp|Corporation|Limited|GmbH|LLC|S\.A|AG)\.?$", "", v, flags=re.I).strip()
+
+
+def rname(ip):
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except (OSError, UnicodeError):
+        return ""
+
+
+def kind(d):
+    t = " ".join(s["type"] for s in d["services"]) + " " + " ".join(d.get("upnp", {}).get("types", []))
+    v = (d.get("vendor", "") + " " + d.get("name", "") + " " + d.get("model", "")).lower()
+    if d.get("gateway") or "InternetGatewayDevice" in t:
+        return "router"
+    if "_googlecast" in t or "MediaRenderer" in t and ("tv" in v or "samsung" in v or "lg " in v or "sony" in v or "philips" in v):
+        return "tv"
+    if "MediaRenderer" in t or "_raop" in t or "_spotify-connect" in t or "_sonos" in t or "_snapcast" in t or re.search(r"denon|yamaha|onkyo|marantz|sonos|bose|pioneer", v):
+        return "audio"
+    if "_ipp" in t or "_printer" in t or "_pdl" in t or re.search(r"brother|canon|epson|hewlett|kyocera|lexmark|ricoh", v):
+        return "printer"
+    if "_smb" in t or "_afp" in t or "_nfs" in t or re.search(r"synology|qnap|western digital", v):
+        return "nas"
+    if "_hap" in t or "_matter" in t or "_home-assistant" in t or re.search(r"espressif|tuya|shelly|philips lighting|signify|xiaomi|ikea", v):
+        return "iot"
+    if re.search(r"apple|samsung|oneplus|huawei|motorola|google|oppo|vivo|realme|nothing", v) and "_workstation" not in t:
+        return "phone"
+    if "_ssh" in t or "_workstation" in t or re.search(r"intel|dell|lenovo|asus|micro-star|gigabyte|asrock|raspberry|hp inc", v):
+        return "pc"
+    if re.search(r"nintendo|sony interactive|microsoft|valve", v):
+        return "console"
+    if "_rtsp" in t or re.search(r"hikvision|dahua|reolink|axis comm|ezviz|wyze", v):
+        return "camera"
+    return "device"
+
+
+def audio_targets(devs):
+    out = []
+    for d in devs:
+        for s in d["services"]:
+            if s["type"] in ("_raop._tcp", "_airplay._tcp"):
+                out.append({"ip": d["ip"], "name": d["name"] or s["name"], "via": "airplay", "how": "PipeWire (AirPlay)", "ready": True})
+            elif s["type"] == "_snapcast._tcp":
+                out.append({"ip": d["ip"], "name": d["name"] or s["name"], "via": "snapcast", "how": "PipeWire (Snapcast)", "ready": True})
+            elif s["type"] == "_spotify-connect._tcp":
+                out.append({"ip": d["ip"], "name": d["name"] or s["name"], "via": "spotify", "how": "v aplikácii Spotify: ikona zariadení", "ready": True})
+            elif s["type"] == "_googlecast._tcp":
+                out.append({"ip": d["ip"], "name": d["name"] or s["name"], "via": "cast", "how": "Chromecast: mkchromecast (doinštalovať)", "ready": False})
+        if any("MediaRenderer" in t for t in d.get("upnp", {}).get("types", [])):
+            out.append({"ip": d["ip"], "name": d["name"], "via": "dlna", "how": "DLNA: pa-dlna (doinštalovať)", "ready": False})
+    seen, res = set(), []
+    for t in out:
+        k = (t["ip"], t["via"])
+        if k not in seen:
+            seen.add(k)
+            res.append(t)
+    return res
+
+
+def scan():
+    me = local()
+    if not me:
+        return {"ok": False, "error": "bez pripojenia do siete"}
+    with concurrent.futures.ThreadPoolExecutor(3) as ex:
+        f_arp, f_mdns, f_ssdp = ex.submit(sweep, me), ex.submit(mdns), ex.submit(ssdp)
+        neigh, md, up = f_arp.result(), f_mdns.result(), f_ssdp.result()
+    net = ipaddress.ip_network("%s/%d" % (me["ip"], me["prefix"]), strict=False)
+    ips = set(neigh) | {ip for ip in set(md) | set(up) if ipaddress.ip_address(ip) in net}
+    hist = load(HIST, {})
+    now = int(time.time())
+    first_scan = not hist
+    with concurrent.futures.ThreadPoolExecutor(16) as ex:
+        names = dict(zip(sorted(ips), ex.map(rname, sorted(ips))))
+    devs, used = [], set()
+    for ip in sorted(ips, key=lambda x: ipaddress.ip_address(x)):
+        if ip == me["ip"]:
+            continue
+        n = neigh.get(ip, {"ip": ip, "mac": ""})
+        m, u = md.get(ip, {}), up.get(ip, {})
+        d = {"ip": ip, "mac": n["mac"], "vendor": vendor(n["mac"]) or u.get("maker", ""),
+             "name": m.get("name") or u.get("name") or re.sub(r"^_gateway$", "", re.sub(r"\.(local|lan|home|localdomain)$", "", names.get(ip, ""))),
+             "model": m.get("model") or u.get("model", ""), "services": m.get("services", []), "upnp": u,
+             "gateway": ip == me["gateway"]}
+        d["kind"] = kind(d)
+        key = d["mac"] or ip
+        if key in used:                          # dve adresy za jednou MAC (router, NAT VM)
+            key = key + "|" + ip
+        used.add(key)
+        h = hist.get(key, {"first": now})
+        h.update({"last": now, "ip": ip, "mac": d["mac"], "name": d["name"] or h.get("name", ""), "kind": d["kind"],
+                  "vendor": d["vendor"], "model": d["model"], "net": netid(me)})
+        hist[key] = h
+        d["key"], d["first"], d["last"], d["online"] = key, h["first"], now, True
+        d["new"] = not first_scan and now - h["first"] < 7 * 86400
+        devs.append(d)
+    # pripojené v minulosti (v tejto sieti, posledných 60 dní)
+    for key, h in hist.items():
+        if key in used or h.get("net", netid(me)) != netid(me) or now - h.get("last", 0) > 60 * 86400:
+            continue
+        devs.append({"key": key, "ip": h.get("ip", ""), "mac": h.get("mac", ""), "vendor": h.get("vendor", ""), "name": h.get("name", ""),
+                     "model": h.get("model", ""), "services": [], "upnp": {}, "gateway": False, "kind": h.get("kind", "device"),
+                     "first": h.get("first", 0), "last": h.get("last", 0), "online": False, "new": False})
+    save(HIST, hist)
+    me["apps"] = apps_online()
+    res = {"ok": True, "me": me, "subnet": str(net), "devices": devs, "audio": audio_targets([d for d in devs if d["online"]]), "time": now,
+           "airplay": airplay_state(), "net": netid(me)}
+    save(LAST, res)
+    return with_user(res)
+
+
+def netid(me):
+    """Sieť sa pozná podľa MAC brány (rovnaká adresa 192.168.1.0/24 je doma aj v kaviarni)."""
+    for n in json.loads(sh(["ip", "-j", "-4", "neigh", "show", me["gateway"]])[1] or "[]"):
+        if n.get("lladdr"):
+            return n["lladdr"].lower()
+    return me.get("gateway", "")
+
+
+def with_user(res):
+    """Vlastné mená a druhy (identifikované zariadenia) a „Moja sieť“ z ~/.config/latteos/siet-zariadenia.json."""
+    u = load(USER, {})
+    names = u.get("zariadenia", {})
+    res["mine"] = res.get("net", "") in u.get("moje-siete", [])
+    since = u.get("moje-siete-od", {}).get(res.get("net", ""), 0)      # nové = objavené až po označení „Moja sieť“
+    for d in res.get("devices", []):
+        o = names.get(d.get("key", ""), {})
+        d["auto"] = {"name": d.get("name", ""), "kind": d.get("kind", "device")}
+        if o.get("name"):
+            d["name"] = o["name"]
+        if o.get("kind") in KINDS:
+            d["kind"] = o["kind"]
+        d["identified"] = bool(o)
+        d["unknown"] = not o and not d.get("name") and d.get("kind") == "device"
+        d["new"] = bool(res["mine"] and since and d.get("first", 0) > since + 60 and not d.get("gateway")
+                        and time.time() - d.get("first", 0) < 7 * 86400 and not o)
+    return res
+
+
+# ── AirPlay v PipeWire ──────────────────────────────────────────────────────────────────────────────────
+def airplay_state():
+    return "module-raop-discover" in sh(["pactl", "list", "short", "modules"])[1]
+
+
+def airplay(on):
+    mods = sh(["pactl", "list", "short", "modules"])[1]
+    if on and "module-raop-discover" not in mods:
+        return sh(["pactl", "load-module", "module-raop-discover"])[0]
+    if not on:
+        for line in mods.splitlines():
+            if "module-raop-discover" in line:
+                sh(["pactl", "unload-module", line.split()[0]])
+    return 0
+
+
+def main(a):
+    if a[:1] == ["sken"]:
+        print(json.dumps(scan(), ensure_ascii=False)); return 0
+    if a[:1] == ["posledny"]:
+        print(json.dumps(with_user(load(LAST, {"ok": False, "devices": [], "audio": []})), ensure_ascii=False)); return 0
+    if a[:1] == ["oznac"] and len(a) == 4:
+        u = load(USER, {})
+        z = u.setdefault("zariadenia", {})
+        if not a[2] and not a[3]:
+            z.pop(a[1], None)
+        else:
+            z[a[1]] = {k: v for k, v in (("name", a[2].strip()[:48]), ("kind", a[3] if a[3] in KINDS else "")) if v}
+        save(USER, u); return 0
+    if a[:1] == ["zabudni"] and len(a) == 2:
+        h = load(HIST, {}); h.pop(a[1], None); save(HIST, h)
+        u = load(USER, {}); u.get("zariadenia", {}).pop(a[1], None); save(USER, u)
+        last = load(LAST, {})
+        if last.get("devices"):
+            last["devices"] = [d for d in last["devices"] if d.get("key") != a[1]]; save(LAST, last)
+        return 0
+    if a[:1] == ["moja-siet"] and len(a) == 2 and a[1] in ("ano", "nie"):
+        last = load(LAST, {})
+        if not last.get("net"):
+            print("latte-inspektor: najprv prehľadaj sieť", file=sys.stderr); return 1
+        u = load(USER, {})
+        m = set(u.get("moje-siete", []))
+        (m.add if a[1] == "ano" else m.discard)(last["net"])
+        od = u.setdefault("moje-siete-od", {})
+        if a[1] == "ano":
+            od.setdefault(last["net"], int(time.time()))
+        else:
+            od.pop(last["net"], None)
+        u["moje-siete"] = sorted(m); save(USER, u); return 0
+    if a[:1] == ["airplay"]:
+        if len(a) == 1:
+            print(json.dumps({"on": airplay_state()})); return 0
+        if a[1] in ("zapni", "vypni"):
+            return airplay(a[1] == "zapni")
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

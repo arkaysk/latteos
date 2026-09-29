@@ -1,0 +1,11 @@
+#!/bin/sh
+# latte-terminal [PRÍKAZ…] — otvorí predvolený terminál (Nastavenia › Systém › Pre pokročilých → ~/.config/latteos/terminal,
+# predvolene foot), voliteľne s príkazom. Každý terminál má iný spôsob odovzdania príkazu; tu je to zjednotené.
+t=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/terminal" 2>/dev/null | tr -d '[:space:]')
+[ -n "$t" ] && command -v "$t" >/dev/null 2>&1 || t=foot
+if [ $# -eq 0 ]; then exec "$t"; fi
+case "$t" in
+    foot|kitty|wezterm) [ "$t" = wezterm ] && exec wezterm start -- "$@"; exec "$t" "$@" ;;
+    gnome-terminal|ptyxis) exec "$t" -- "$@" ;;
+    *) exec "$t" -e "$@" ;;
+esac
