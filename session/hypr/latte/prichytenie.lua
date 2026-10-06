@@ -122,13 +122,22 @@ function P.setup()
     local ok = pcall(hl.plugin.load, P.plugin)
     if not ok then return false end
     -- udalosti existujú, iba ak sa plugin naozaj načítal (pri --verify-config nie; hl.on by zapísal chybu konfigurácie)
-    local loaded = false
+    local loaded, version = false, "0"
     for _, pl in ipairs(hl.get_loaded_plugins() or {}) do
-        if pl.name == "latte-okna" then loaded = true end
+        if pl.name == "latte-okna" then loaded = true; version = tostring(pl.version or "0") end
     end
     if not loaded then return false end
     hl.on("latte.drag_motion", on_motion)
     hl.on("latte.drag_end", on_end)
+    -- 0.2+: aplikácia žiada minimalizáciu vlastným tlačidlom „–“ (Steam, GTK/CSD) → ako tlačidlo LatteOS
+    if version >= "0.2" then
+        hl.on("latte.minimize_request", function(w)
+            if w and w.address then
+                if latte and latte.goo_min then pcall(latte.goo_min, w) end
+                hl.dispatch(hl.dsp.window.move({ workspace = "special:minimized", follow = false, window = "address:" .. w.address }))
+            end
+        end)
+    end
     return true
 end
 

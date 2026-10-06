@@ -3,6 +3,15 @@
 #   plný App Manager je otvorený → iba ho vytiahne dopredu; inak otvorí/zavrie rýchle spustenie (spustac.qml
 #   beží na pozadí, prepína sa cez IPC Quickshellu; ak nebeží, spustí sa rovno otvorený).
 qml=/usr/share/latteos/apps/spustac.qml
+# plocha LatteOS Kvapky: Štart je dashboard, ktorý vyteká z kvapky Hodiny (session/kvapky)
+# (iba scéna kvapka.plm; engine Goo má vlastný spúšťač nižšie)
+if [ -e "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/kvapky" ] && pgrep -f 'pleamar --scene [^ ]*/kvapka\.plm' >/dev/null; then
+    exec pleamar --say kvapka "emit dash_toggle"
+fi
+# engine Goo: spúšťač je okno z kvapky LensGoo (kláves Windows ho otvorí aj bez myši)
+if pgrep -f 'pleamar --scene [^ ]*/goo\.plm' >/dev/null; then
+    exec pleamar --say goo "emit lens_toggle"
+fi
 addr=$(hyprctl clients -j 2>/dev/null | python3 -c 'import json,sys
 for w in json.load(sys.stdin):
     if w.get("title") == "Aplikácie — LatteOS": print(w["address"]); break' 2>/dev/null)

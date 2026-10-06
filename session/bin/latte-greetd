@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""latte-greetd — prihlásenie cez greetd pre scénu prihlásenia LatteOS GOO (session/goo/login.plm, LATTE_LOGIN=greetd).
+
+  latte-greetd prihlas POUŽÍVATEĽ SÚBOR_RELÁCIE -- PRÍKAZ…
+        overí heslo a pripraví reláciu používateľa; vypíše {"ok": true} alebo {"ok": false, "chyba": "…"}
+  latte-greetd koniec
+        ukončí kompozitor všeobecnej relácie — greetd spustí pripravenú reláciu, až keď prihlasovač skončí
+
+Heslo NEJDE v argumentoch (tie vidí každý používateľ v /proc): scéna ho zapíše cez pleamar `files.write` do
+súkromného priečinka prihlasovača na tmpfs ($XDG_DATA_HOME/pleamar/login/h.json, nastavuje latte-greeter) a tento
+skript ho prečíta a hneď zmaže. Protokol greetd: 4 bajty dĺžky + JSON na sokete $GREETD_SOCK.
+"""
+import json, os, socket, struct, subprocess, sys, time
+
+DATA = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "pleamar", "login")
+HESLO = os.path.join(DATA, "h.json")
+STAV = "/var/lib/greetd"
+
+
+def out(ok, chyba=""):
+    print(json.dumps({"ok": ok, "chyba": chyba}, ensure_ascii=False))
+    return 0 if ok else 1
+
+
+def heslo():
+    """počká na súbor s heslom (zápis z pleamaru je o chvíľu neskôr než spustenie), prečíta ho a zmaže"""
+    for _ in range(40):
+        try:
+            with open(HESLO, encoding="utf-8") as f:
+                p = json.load(f).get("p", "")
+            break
+        except (OSError, ValueError, AttributeError):
+            time.sleep(0.05)
+    else:
+        return None
+    try:
+        with open(HESLO, "w") as f:                      # prepísať a zmazať: nenechať ho ležať ani v pamäti tmpfs
+            f.write("{}")
+        os.unlink(HESLO)
+    except OSError:
+        pass
+    return p if isinstance(p, str) else None
+
+
+class Greetd:
+    def __init__(self):
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.s.settimeout(30)
+        self.s.connect(os.environ["GREETD_SOCK"])
+
+    def ask(self, **msg):
+        raw = json.dumps(msg).encode()
+        self.s.sendall(struct.pack("=I", len(raw)) + raw)
+        n = struct.unpack("=I", self._read(4))[0]
+        return json.loads(self._read(n))
+
+    def _read(self, n):
+        buf = b""
+        while len(buf) < n:
+            part = self.s.recv(n - len(buf))
+            if not part:
+                raise OSError("greetd zavrel spojenie")
+            buf += part
+        return buf
+
+
+def zapamataj(user, rel):
+    """naposledy prihlásený účet a relácia — tie isté súbory ako doterajší prihlasovač (session/greeter/shell.qml)"""
+    try:
+        open(os.path.join(STAV, "latte-last-user"), "w").write(user + "\n")
+        if rel:
+            open(os.path.join(STAV, "latte-last-session"), "w").write(rel + "\n")
+        p = os.path.join(STAV, "latte-recent")
+        try:
+            stare = [l.strip() for l in open(p) if l.strip() and l.strip() != user]
+        except OSError:
+            stare = []
+        open(p, "w").write("\n".join([user] + stare[:1]) + "\n")
+    except OSError:
+        pass
+
+
+def prihlas(user, rel, cmd):
+    pw = heslo()
+    if pw is None:
+        return out(False, "heslo")
+    if "GREETD_SOCK" not in os.environ:
+        return out(False, "greetd")
+    try:
+        g = Greetd()
+        r = g.ask(type="create_session", username=user)
+        for _ in range(4):                               # PAM sa môže pýtať viackrát; heslo dostane iba na tajnú otázku
+            if r.get("type") != "auth_message":
+                break
+            tajne = r.get("auth_message_type") == "secret"
+            r = g.ask(type="post_auth_message_response", response=pw if tajne else None)
+        if r.get("type") != "success":
+            try:
+                g.ask(type="cancel_session")
+            except OSError:
+                pass
+            return out(False, "auth" if r.get("error_type") == "auth_error" else str(r.get("description") or "greetd"))
+        # LATTE_Z_PRIHLASENIA: plocha vie, že nadväzuje na obraz prihlásenia (LoginGoo → GooPower)
+        r = g.ask(type="start_session", cmd=cmd, env=["LATTE_Z_PRIHLASENIA=1"])
+        if r.get("type") != "success":
+            return out(False, str(r.get("description") or "start"))
+    except (OSError, ValueError, struct.error) as e:
+        return out(False, "greetd: %s" % e)
+    zapamataj(user, rel)
+    return out(True)
+
+
+def koniec():
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        open(os.path.join(DATA, "prihlaseny"), "w").close()      # latte-greeter: skončili sme prihlásením, nie pádom
+    except OSError:
+        pass
+    subprocess.run(["labwc", "--exit"], check=False)
+    return 0
+
+
+def main(a):
+    if len(a) >= 5 and a[0] == "prihlas" and a[3] == "--":
+        return prihlas(a[1], a[2], a[4:])
+    if a[:1] == ["koniec"]:
+        return koniec()
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,228 @@
+#!/usr/bin/python3
+"""latte-pocasie — oficiálne výstrahy pred nebezpečným počasím pre Česko a Slovensko (CAP 1.2).
+
+Zdroje (štátne meteorologické ústavy; podľa krajiny polohy):
+  CZ  ČHMÚ, systém SIVS: https://www.chmi.cz/files/portal/docs/meteo/om/bulletiny/XOCZ50_OKPR.xml
+      (CAP pre obce s rozšírenou pôsobnosťou — ORP, kód CISORP; areaDesc = názov ORP)
+  SK  SHMÚ cez MeteoAlarm (EUMETNET): https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-slovakia
+      (Atom so záznamami CAP; areaDesc = okres alebo región)
+  záloha pre CZ: MeteoAlarm …-atom-czechia
+Poloha: súradnice → krajina, okres, obec (Nominatim, raz a do vyrovnávacej pamäte) → zhoda s areaDesc.
+Výsledky sa držia 15 min (~/.cache/latteos/vystrahy-*.xml), aby sa ústavy nezaťažovali.
+
+  latte-pocasie vystrahy LAT LON [--oblast NÁZOV]   platné a nadchádzajúce výstrahy (24 h), JSON po riadkoch:
+        {"level": 1 žltá | 2 oranžová | 3 červená, "type": vietor|burka|sneh|dazd|povoden|teplo|zima|hmla|poziar|lavina|ine,
+         "event", "headline", "desc", "onset", "expires", "area", "source"}
+  latte-pocasie oblasti cz|sk                       názvy oblastí z aktuálneho feedu (na ručný výber v Nastaveniach)
+"""
+import json, os, re, sys, time, unicodedata, urllib.parse, urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos")
+UA = {"User-Agent": "LatteOS/1.0 (latte-pocasie; weather warnings)"}
+CAP = "{urn:oasis:names:tc:emergency:cap:1.2}"
+ATOM = "{http://www.w3.org/2005/Atom}"
+FEEDS = {
+    "cz": ["https://www.chmi.cz/files/portal/docs/meteo/om/bulletiny/XOCZ50_OKPR.xml",
+           "https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-czechia"],
+    "sk": ["https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-slovakia"],
+}
+SEVERITY = {"minor": 0, "moderate": 1, "severe": 2, "extreme": 3}
+# typ javu: MeteoAlarm awareness_type (číslo) a slová v názve udalosti (cs/sk/en)
+AW_TYPE = {1: "vietor", 2: "sneh", 3: "burka", 4: "hmla", 5: "teplo", 6: "zima", 7: "ine", 8: "ine", 9: "poziar",
+           10: "dazd", 11: "ine", 12: "povoden", 13: "dazd"}
+WORDS = [("vietor", "vítr vietor wind vichr víchr"), ("burka", "bouř búrk thunder krupo hail"),
+         ("sneh", "sníh sněh sneh snow závěj záveje náledí poľadovic ice mráz ledovk glazé"),
+         ("dazd", "déšť dážď dažď srážk zrážk rain"), ("povoden", "povod flood"), ("teplo", "teplot vysok horúč horko heat"),
+         ("zima", "nízk mráz cold frost"), ("hmla", "mlha hmla fog"), ("poziar", "požár požiar fire"), ("lavina", "lavin avalanch")]
+
+
+def fold(s):
+    return "".join(c for c in unicodedata.normalize("NFKD", (s or "").lower()) if not unicodedata.combining(c))
+
+
+def fetch(url, cache_name, max_age=900, timeout=8):
+    os.makedirs(CACHE, exist_ok=True)
+    p = os.path.join(CACHE, cache_name)
+    try:
+        if time.time() - os.path.getmtime(p) < max_age:
+            return open(p, "rb").read()
+    except OSError:
+        pass
+    try:
+        data = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read()
+        open(p, "wb").write(data)
+        return data
+    except Exception:
+        try:
+            return open(p, "rb").read()                 # bez siete: posledné známe výstrahy
+        except OSError:
+            return None
+
+
+def place(lat, lon):
+    """krajina a názvy oblastí okolo bodu (obec, ORP/okres, kraj) — Nominatim, raz pre dané súradnice"""
+    p = os.path.join(CACHE, "poloha.json")
+    key = "%.3f,%.3f" % (float(lat), float(lon))
+    try:
+        c = json.load(open(p))
+        if c.get("key") == key:
+            return c
+    except (OSError, ValueError):
+        pass
+    url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=cs,sk&lat=%s&lon=%s" % (lat, lon)
+    try:
+        a = json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=6).read()).get("address", {})
+    except Exception:
+        return {"key": key, "country": "", "names": []}
+    names = [a.get(k, "") for k in ("city", "town", "village", "municipality", "county", "state_district", "state") if a.get(k)]
+    c = {"key": key, "country": a.get("country_code", ""), "names": names}
+    os.makedirs(CACHE, exist_ok=True)
+    json.dump(c, open(p, "w"))
+    return c
+
+
+def norm_area(s):
+    s = fold(s)
+    for w in ("okres ", "obvod ", "orp ", "kraj ", "region ", "district ", "mesto ", "město ", "hlavni mesto ", "hl. m. "):
+        s = s.replace(w, "")
+    return re.sub(r"[^a-z0-9 ]+", " ", s).strip()
+
+
+def area_match(area, names, oblast):
+    a = norm_area(area)
+    if oblast:
+        return a == norm_area(oblast)
+    for n in names:
+        n2 = norm_area(n)
+        if n2 and (a == n2 or a.startswith(n2 + " ") or n2 in a.split(" - ")):
+            return True
+    return False
+
+
+def level_of(params, severity):
+    al = params.get("awareness_level", "")
+    m = re.match(r"\s*(\d)", al)
+    if m:                                             # MeteoAlarm: „2; yellow; Moderate“ → 1 (1 zelená = nič)
+        return max(0, int(m.group(1)) - 1)
+    return SEVERITY.get(fold(severity), 0)
+
+
+def type_of(params, event):
+    m = re.match(r"\s*(\d+)", params.get("awareness_type", ""))
+    if m and int(m.group(1)) in AW_TYPE and AW_TYPE[int(m.group(1))] != "ine":
+        return AW_TYPE[int(m.group(1))]
+    e = fold(event)
+    for t, words in WORDS:
+        if any(fold(w) in e for w in words.split()):
+            return t
+    return "ine"
+
+
+def parse_time(s):
+    try:
+        return datetime.fromisoformat(s.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def infos_from_cap(root, source):
+    """CAP <alert> → zoznam výstrah (jazyk cs/sk prednostne, inak prvý)"""
+    out = []
+    if root.find(CAP + "msgType") is not None and fold(root.findtext(CAP + "msgType")) == "cancel":
+        return out
+    infos = root.findall(CAP + "info")
+    by_lang = {}
+    for i in infos:
+        by_lang.setdefault((i.findtext(CAP + "language") or "")[:2].lower(), []).append(i)
+    chosen = by_lang.get("sk") or by_lang.get("cs") or (infos and [infos[0]] or [])
+    for i in chosen if (by_lang.get("sk") or by_lang.get("cs")) else infos[:1]:
+        params = {p.findtext(CAP + "valueName", ""): p.findtext(CAP + "value", "") for p in i.findall(CAP + "parameter")}
+        event = i.findtext(CAP + "event", "")
+        for a in i.findall(CAP + "area"):
+            out.append({"level": level_of(params, i.findtext(CAP + "severity", "")), "type": type_of(params, event),
+                        "event": event, "headline": i.findtext(CAP + "headline", "") or event,
+                        "desc": (i.findtext(CAP + "description", "") or "").strip()[:400],
+                        "onset": i.findtext(CAP + "onset", "") or i.findtext(CAP + "effective", ""),
+                        "expires": i.findtext(CAP + "expires", ""), "area": a.findtext(CAP + "areaDesc", ""), "source": source})
+    return out
+
+
+def infos_from_atom(root, source):
+    """MeteoAlarm Atom: každý <entry> nesie hlavné polia CAP priamo (cap:event, cap:severity, cap:areaDesc…)"""
+    out = []
+    for e in root.findall(ATOM + "entry"):
+        g = lambda k: e.findtext(CAP + k, "") or ""
+        params = {}
+        for k in ("awareness_level", "awareness_type"):
+            v = e.findtext("{*}" + k) or ""
+            if v:
+                params[k] = v
+        if fold(g("message_type") or g("msgType")) == "cancel":
+            continue
+        ev = g("event")
+        out.append({"level": level_of(params, g("severity")), "type": type_of(params, ev), "event": ev,
+                    "headline": e.findtext(ATOM + "title", "") or ev, "desc": "", "onset": g("onset") or g("effective"),
+                    "expires": g("expires"), "area": g("areaDesc"), "source": source})
+    return out
+
+
+def parse_feed(data, source):
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return []
+    if root.tag == CAP + "alert":
+        return infos_from_cap(root, source)
+    if root.tag == ATOM + "feed":
+        return infos_from_atom(root, source)
+    return []
+
+
+def warnings_for(country, names, oblast=None, now=None):
+    now = now or datetime.now(timezone.utc)
+    res = []
+    for url in FEEDS.get(country, []):
+        src = "ČHMÚ" if "chmi.cz" in url else ("SHMÚ · MeteoAlarm" if country == "sk" else "MeteoAlarm")
+        data = fetch(url, "vystrahy-%s-%d.xml" % (country, FEEDS[country].index(url)))
+        if not data:
+            continue
+        res = [w for w in parse_feed(data, src) if w["level"] > 0 and area_match(w["area"], names, oblast)]
+        if res or "chmi.cz" not in url:
+            break                                     # ČHMÚ odpovedal (aj prázdne) → zálohu netreba
+    out, seen = [], set()
+    for w in res:
+        exp, ons = parse_time(w["expires"]), parse_time(w["onset"])
+        if exp and exp < now:
+            continue
+        if ons and ons > now + timedelta(hours=24):
+            continue
+        k = (w["event"], w["onset"], w["expires"])
+        if k not in seen:
+            seen.add(k); out.append(w)
+    out.sort(key=lambda w: (-w["level"], w["onset"]))
+    return out
+
+
+def main(a):
+    if len(a) >= 3 and a[0] == "vystrahy":
+        lat, lon = a[1], a[2]
+        oblast = a[a.index("--oblast") + 1] if "--oblast" in a and a.index("--oblast") + 1 < len(a) else None
+        pl = place(lat, lon)
+        country = pl.get("country") or ("cz" if float(lon) < 16.9 and float(lat) > 48.55 else "sk")
+        for w in warnings_for(country, pl.get("names", []), oblast):
+            print(json.dumps(w, ensure_ascii=False))
+        return 0
+    if len(a) == 2 and a[0] == "oblasti" and a[1] in FEEDS:
+        data = fetch(FEEDS[a[1]][0], "vystrahy-%s-0.xml" % a[1])
+        for n in sorted({w["area"] for w in parse_feed(data or b"", "")}):
+            print(n)
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# latte-upstream — čo je nové u autorov projektov, z ktorých LatteOS preberá (30. 9. 2026: „udržuj povedomie
+# o updatoch“). Nič nemení, iba porovná, na čom stojíme, s ich poslednou verziou:
+#   · pleamar (k4ditano) — Kvapky, /usr/bin/pleamar s našimi záplatami (resources/patches, zdroj resources/upstream)
+#   · pleamar-wm, marea-plm, pleamar (pôvodné) — relácie „Marea“ (~/.local/share/marea-povodna)
+#   · serpantinum (ilyamiro) — relácia „Serpantinum“ (~/.local/share/serpantinum/zdroj)
+#   · Noctalia — balík noctalia-git (COPR) proti poslednému vydaniu
+# Použitie: latte-upstream [-v]   (-v: aj zoznam nových zmien, nielen počet)
+set -u
+verbose=false; [ "${1:-}" = -v ] && verbose=true
+repo="$(cd "$(dirname "$(readlink -f "$0")")/../.." 2>/dev/null && pwd)"
+[ -d "$repo/resources/upstream/pleamar" ] || repo="$HOME/jihlavanka001"
+
+git_new() {   # $1 názov, $2 priečinok s git: počet zmien u autora, ktoré ešte nemáme
+    local name="$1" dir="$2" n
+    if [ ! -d "$dir/.git" ]; then printf '%-24s nie je stiahnutý (%s)\n' "$name" "$dir"; return; fi
+    git -C "$dir" fetch -q origin 2>/dev/null || { printf '%-24s nedá sa spojiť s autorom\n' "$name"; return; }
+    local up; up="$(git -C "$dir" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo origin/main)"
+    n="$(git -C "$dir" rev-list --count "HEAD..$up" 2>/dev/null || echo ?)"
+    if [ "$n" = 0 ]; then printf '%-24s aktuálny (%s)\n' "$name" "$(git -C "$dir" log --oneline -1 --format=%h)"
+    else
+        printf '%-24s %s nových zmien u autora\n' "$name" "$n"
+        $verbose && git -C "$dir" log --oneline --no-decorate "HEAD..$up" | head -15 | sed 's/^/    /'
+    fi
+}
+
+echo "== LatteOS Kvapky"
+git_new "pleamar (naše záplaty)" "$repo/resources/upstream/pleamar"
+echo "   v systéme: $(pleamar --version 2>/dev/null || echo chýba)"
+git_new "hyprglass (sklo okien)" "$repo/resources/upstream/hyprglass"
+echo "== pokusy (samostatné relácie)"
+for r in pleamar pleamar-wm marea-plm; do git_new "$r (Marea)" "$HOME/.local/share/marea-povodna/src/$r"; done
+git_new "serpantinum" "$HOME/.local/share/serpantinum/zdroj"
+echo "== Noctalia"
+have="$(rpm -q --qf '%{VERSION}' noctalia-git 2>/dev/null | cut -d^ -f1)"
+if command -v gh >/dev/null; then latest="$(gh api repos/noctalia-dev/noctalia-shell/releases/latest --jq .tag_name 2>/dev/null)"
+else latest="$(curl -fsS https://api.github.com/repos/noctalia-dev/noctalia-shell/releases/latest 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')"; fi
+latest="${latest#v}"
+if [ -z "$latest" ]; then printf "%-24s " noctalia; echo "nedá sa spojiť (máme ${have:-?})"
+elif [ "$have" = "$latest" ]; then printf "%-24s " noctalia; echo "aktuálna ($have)"
+else printf "%-24s " noctalia; echo "máme ${have:-?}, u autora $latest (dnf upgrade noctalia-git)"; fi
+echo
+echo "Aktualizácia: pleamar → resources/patches/README.md (znova použiť záplaty), Marea → setup/lab/marea-povodna.sh,"
+echo "Serpantinum → setup/lab/serpantinum.sh"

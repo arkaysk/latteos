@@ -3,10 +3,27 @@
 
   latte-sysmon stream [s]    JSON riadok každú sekundu (alebo každých s): CPU, RAM, disky, sieť, teploty, procesy
   latte-sysmon autorun       JSON: čo sa spúšťa pri štarte (XDG autostart, systemd user/system, časovače, cron,
-                             štart relácie LatteOS, prihlasovacie skripty, environment.d, moduly jadra) — ako Autoruns
+                             štart relácie LatteOS, prihlasovacie skripty, environment.d, moduly jadra, preload knižníc,
+                             sudoers.d, polkit, udev, Hyprland exec) — ako Autoruns: pôvod (balík / Flatpak / LatteOS /
+                             tvoje / neznáme), vplyv na štart (systemd-analyze blame), nové od zapamätaného stavu
   latte-sysmon hw            JSON: hardvér ako CPU-Z/HWiNFO (procesor, cache, doska/BIOS, pamäť, grafika, disky,
                              senzory, batéria, systém)
   latte-sysmon once          jeden snímok (bez procesov)
+  latte-sysmon goo [s]       malý JSON riadok každú sekundu pre pás výkonu GooPower (engine Goo): CPU (a teplota,
+                             takt, najnáročnejší proces), RAM, GPU a VRAM (a teplota) — iba to, čo pás ukazuje,
+                             aby bol lacný (latte-sysmon stream číta všetko vrátane procesov a diskov)
+  latte-sysmon bench                          test výkonu CPU (ako Bench v CPU-Z): 7-Zip benchmark (MIPS, porovnateľné s
+                                              7-cpu.com), inak náhradný test; 1 vlákno aj všetky; história v bench.json
+  latte-sysmon sluzby                         JSON: služby systému aj používateľa (stav, popis, povolená, pamäť)
+  latte-sysmon sluzba system|user start|stop|restart|enable|disable JEDNOTKA   (systémové → polkit, heslo správcu)
+  latte-sysmon pouzivatelia                   JSON: prihlásení používatelia, relácie a ich procesy (CPU, RAM)
+  latte-sysmon autorun-znam                   zapamätať súčasný stav štartu (porovnanie: „nové od…“ v Po štarte)
+  latte-sysmon proces PID                     JSON detail procesu: stav, vlákna, priorita, začiatok, exe, priečinok,
+                                              pamäť (PSS, swap), otvorené súbory, sieťové spojenia, pôvod (RPM/Flatpak)
+  latte-sysmon proces PID priorita nizka|normalna|vysoka   priorita CPU aj disku (vysoká chce heslo správcu)
+  latte-sysmon proces PID usporny on|off       úsporný režim ako vo Win11 (nice 19 + disk idle)
+  latte-sysmon proces PID pauza|pokracuj       pozastaviť / pokračovať (SIGSTOP/SIGCONT celého stromu)
+  latte-sysmon proces PID ukonci-strom [kill]  ukončiť proces aj s potomkami
   latte-sysmon hw-root       JSON (spúšťa sa so sudo): moduly pamäte a sloty (dmidecode, SPD s decode-dimms), pätica
                              a napätie CPU, doska, SMART diskov — Monitor si výsledok uloží do ~/.cache/latteos/hw-root.json
   latte-sysmon senzory       jeden snímok všetkých senzorov (ako HWiNFO: procesor po jadrách, hwmon, pamäť, disky,
@@ -32,6 +49,7 @@ CLK = os.sysconf("SC_CLK_TCK")
 PAGE = os.sysconf("SC_PAGE_SIZE")
 ME = os.getuid()
 RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "latteos")
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "latteos")
 
 # procesy prostredia LatteOS (ukončenie má vplyv na celú plochu → varovanie)
 DESKTOP = {"Hyprland", "noctalia", "labwc", "qs", "quickshell", "greetd", "latte-session", "pipewire", "pipewire-pulse",
@@ -68,6 +86,51 @@ def meminfo():
     avail = m.get("MemAvailable", 0)
     return {"total": total, "used": total - avail, "avail": avail,
             "swapTotal": m.get("SwapTotal", 0), "swapUsed": m.get("SwapTotal", 0) - m.get("SwapFree", 0)}
+
+
+def disk_stats():
+    """fyzické disky: (názov, prečítané B, zapísané B, operácie, ms obsluhy operácií, ms aktívny) — /proc/diskstats"""
+    out = {}
+    for line in read("/proc/diskstats").splitlines():
+        f = line.split()
+        name = f[2]
+        if name.startswith(("loop", "ram", "zram", "dm-", "sr")) or (name[-1].isdigit() and not name.startswith(("nvme", "mmcblk"))):
+            continue
+        if (name.startswith("nvme") and "p" in name[4:]) or (name.startswith("mmcblk") and "p" in name[6:]):
+            continue
+        out[name] = (int(f[5]) * 512, int(f[9]) * 512, int(f[3]) + int(f[7]), int(f[6]) + int(f[10]), int(f[12]))
+    return out
+
+
+def nic_stats():
+    out = {}
+    for line in read("/proc/net/dev").splitlines()[2:]:
+        name, _, rest = line.partition(":")
+        name = name.strip()
+        if name == "lo" or name.startswith(("veth", "docker", "br-", "virbr", "ifb")):
+            continue
+        f = rest.split()
+        out[name] = (int(f[0]), int(f[8]))
+    return out
+
+
+def mem_composition():
+    """zloženie pamäte ako Win11 (používané aplikáciami, vyrovnávacia, voľná) a zram (koľko sa zmestilo do koľko)"""
+    m = {}
+    for line in read("/proc/meminfo").splitlines():
+        k, _, rest = line.partition(":")
+        m[k] = int(rest.split()[0]) * 1024 if rest.strip() else 0
+    cache = m.get("Cached", 0) + m.get("Buffers", 0) + m.get("SReclaimable", 0) - m.get("Shmem", 0)
+    out = {"total": m.get("MemTotal", 0), "free": m.get("MemFree", 0), "cache": max(0, cache), "shared": m.get("Shmem", 0),
+           "kernel": m.get("Slab", 0) - m.get("SReclaimable", 0) + m.get("KernelStack", 0) + m.get("PageTables", 0),
+           "dirty": m.get("Dirty", 0) + m.get("Writeback", 0)}
+    out["apps"] = max(0, out["total"] - out["free"] - out["cache"] - out["shared"] - out["kernel"])
+    for z in glob.glob("/sys/block/zram*"):
+        mm = read(z + "/mm_stat").split()
+        if len(mm) >= 3:
+            out.setdefault("zram", {"orig": 0, "compr": 0, "used": 0})
+            out["zram"]["orig"] += int(mm[0]); out["zram"]["compr"] += int(mm[1]); out["zram"]["used"] += int(mm[2])
+    return out
 
 
 def disk_io():
@@ -252,7 +315,43 @@ def user_of(uid):
     return USERS[uid]
 
 
-def processes(prev, dt, total_ticks, wins):
+STATE_SK = {"R": "beží", "S": "čaká", "D": "disk", "Z": "zombie", "T": "pozastavený", "t": "ladí sa", "I": "nečinný"}
+
+
+def proc_io(pid):
+    """bajty prečítané a zapísané (iba vlastné procesy; pri cudzích jadro odmietne)"""
+    t = read("/proc/%d/io" % pid)
+    if not t:
+        return None
+    d = dict(l.split(": ") for l in t.splitlines() if ": " in l)
+    return int(d.get("read_bytes", 0)), int(d.get("write_bytes", 0))
+
+
+def proc_gpu_ns(pid):
+    """čas na GPU (ns) zo všetkých klientov DRM procesu — /proc/PID/fdinfo (amdgpu, i915, xe, msm, panfrost…)"""
+    total, seen = 0, set()
+    try:
+        fds = os.listdir("/proc/%d/fdinfo" % pid)
+    except OSError:
+        return None
+    for fd in fds:
+        t = read("/proc/%d/fdinfo/%s" % (pid, fd))
+        if "drm-client-id" not in t:
+            continue
+        cid = (re.search(r"drm-client-id:\s*(\d+)", t) or [None, fd])[1]
+        if cid in seen:
+            continue
+        seen.add(cid)
+        total += sum(int(v) for v in re.findall(r"drm-engine-[\w-]+:\s*(\d+)\s*ns", t))
+    return total if seen else None
+
+
+def processes(prev, dt, total_ticks, wins, state=None):
+    state = state if state is not None else {}
+    pio, pgpu = state.get("pio", {}), state.get("pgpu", {})
+    nio, ngpu = {}, {}
+    gpu_pids = state.get("gpuPids", set())
+    conns = state.get("conns", {})
     procs, now = [], {}
     for pid_s in os.listdir("/proc"):
         if not pid_s.isdigit():
@@ -271,6 +370,21 @@ def processes(prev, dt, total_ticks, wins):
         ticks = utime + stime
         now[pid] = ticks
         cpu = 100.0 * (ticks - prev.get(pid, ticks)) / (CLK * dt) if dt > 0 else 0.0
+        st_ch, nice, nthr, start = f[0], int(f[16]), int(f[17]), int(f[19])
+        disk = 0
+        if uid == ME:
+            io = proc_io(pid)
+            if io:
+                nio[pid] = io
+                if pid in pio and dt > 0:
+                    disk = max(0, (io[0] - pio[pid][0]) + (io[1] - pio[pid][1])) / dt
+        gpu = None
+        if pid in gpu_pids:
+            ns = proc_gpu_ns(pid)
+            if ns is not None:
+                ngpu[pid] = ns
+                if pid in pgpu and dt > 0:
+                    gpu = min(100.0, 100.0 * (ns - pgpu[pid]) / (dt * 1e9))
         if uid != ME and uid != 0:
             kind = "system"
         elif uid == 0:
@@ -283,8 +397,11 @@ def processes(prev, dt, total_ticks, wins):
             kind = "helper"
         procs.append({"pid": pid, "ppid": ppid, "name": name, "user": user_of(uid), "cpu": round(cpu, 1), "rss": rss,
                       "kind": kind, "window": wins.get(pid, ""), "mine": uid == ME,
+                      "state": st_ch, "nice": nice, "threads": nthr, "start": start, "disk": round(disk),
+                      "gpu": round(gpu, 1) if gpu is not None else (state.get("nvPids", {}).get(pid)), "net": conns.get(pid, 0),
                       "_cg": read("/proc/%d/cgroup" % pid).rsplit(":", 1)[-1] if uid == ME else ""})
     app_of(procs, wins)
+    state["pio"], state["pgpu"] = nio, ngpu
     return procs, now
 
 
@@ -302,8 +419,62 @@ def cpu_freq():
     return 0
 
 
+def connections_by_pid():
+    """pid → počet sieťových spojení (TCP/UDP, bez lokálnych) — ss vidí procesy vlastného účtu"""
+    out = {}
+    try:
+        t = subprocess.run(["ss", "-tunpH"], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in t.splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and (parts[5].startswith("127.") or parts[5].startswith("[::1]")):
+            continue
+        for pid in re.findall(r"pid=(\d+)", line):
+            out[int(pid)] = out.get(int(pid), 0) + 1
+    return out
+
+
+_NV = {"t": 0, "v": None}
+
+
+def nvidia_gpu():
+    """NVIDIA (proprietárny ovládač): nvidia-smi raz za 2 s — vyťaženie, VRAM, teplota, takty, príkon"""
+    if not shutil.which("nvidia-smi"):
+        return None
+    if time.monotonic() - _NV["t"] < 2 and _NV["v"] is not None:
+        return _NV["v"]
+    try:
+        t = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,clocks.gr,clocks.mem,power.draw,name,fan.speed",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3).stdout.splitlines()[0]
+        v = [x.strip() for x in t.split(",")]
+        num = lambda x: float(x) if re.match(r"^[\d.]+$", x or "") else None
+        _NV["v"] = {"busy": int(num(v[0]) or 0), "vramUsed": int((num(v[1]) or 0) * 2**20), "vramTotal": int((num(v[2]) or 0) * 2**20),
+                    "temp": num(v[3]), "clock": num(v[4]), "memClock": num(v[5]), "power": num(v[6]), "name": v[7], "fan": num(v[8]), "vendor": "nvidia"}
+    except (OSError, IndexError, subprocess.TimeoutExpired):
+        _NV["v"] = None
+    _NV["t"] = time.monotonic()
+    return _NV["v"]
+
+
+def nvidia_pids():
+    """pid → vyťaženie GPU (%) z nvidia-smi pmon (grafika aj výpočty)"""
+    if not shutil.which("nvidia-smi"):
+        return {}
+    out = {}
+    try:
+        t = subprocess.run(["nvidia-smi", "pmon", "-c", "1", "-s", "u"], capture_output=True, text=True, timeout=4).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in t.splitlines():
+        p = line.split()
+        if len(p) >= 4 and p[1].isdigit():
+            out[int(p[1])] = float(p[3]) if re.match(r"^[\d.]+$", p[3]) else 0.0
+    return out
+
+
 def gpu_busy():
-    """Vyťaženie GPU (amdgpu/i915 cez sysfs), VRAM pri amdgpu; None, keď ovládač nič nehlási (VM)."""
+    """Vyťaženie GPU (amdgpu/i915 cez sysfs, NVIDIA cez nvidia-smi), VRAM; None, keď ovládač nič nehlási (VM)."""
     for card in sorted(glob.glob("/sys/class/drm/card[0-9]")):
         busy = read(card + "/device/gpu_busy_percent")
         if busy:
@@ -312,7 +483,7 @@ def gpu_busy():
             if used and tot:
                 out.update(vramUsed=int(used), vramTotal=int(tot))
             return out
-    return None
+    return nvidia_gpu()
 
 
 def snapshot(state, with_procs=True):
@@ -339,14 +510,34 @@ def snapshot(state, with_procs=True):
         "temps": temps(), "fs": filesystems(),
         "freq": cpu_freq(), "gpu": gpu_busy(),
     }
+    # výkon po zariadeniach (karta Výkon vo Win11): aktívny čas a odozva diskov, sieťovky, zloženie pamäte
+    ds, ns = disk_stats(), nic_stats()
+    pds, pns = state.get("ds", ds), state.get("ns", ns)
+    disks = []
+    for n, (r, w, ops, ms, act) in ds.items():
+        pr, pw, pops, pms, pact = pds.get(n, (r, w, ops, ms, act))
+        dops = ops - pops
+        disks.append({"name": n, "read": rate(r, pr), "write": rate(w, pw), "active": min(100, round(100 * (act - pact) / (dt * 1000))) if dt > 0 else 0,
+                      "resp": round((ms - pms) / dops, 1) if dops > 0 else 0,
+                      "model": read("/sys/block/%s/device/model" % n).strip(), "rota": read("/sys/block/%s/queue/rotational" % n) == "1"})
+    snap["disks"] = disks
+    snap["nics"] = [{"name": n, "rx": rate(rx_, pns.get(n, (rx_, tx_))[0]), "tx": rate(tx_, pns.get(n, (rx_, tx_))[1]),
+                     "wifi": os.path.isdir("/sys/class/net/%s/wireless" % n), "speed": read("/sys/class/net/%s/speed" % n)}
+                    for n, (rx_, tx_) in ns.items() if read("/sys/class/net/%s/operstate" % n) in ("up", "unknown")]
+    snap["memc"] = mem_composition()
+    state["ds"], state["ns"] = ds, ns
     if with_procs:
         fresh = state.get("winT", 0) + 5 < t
         if fresh:                                 # okná z Hyprlandu raz za 5 s
             state["wins"], state["winT"] = window_pids(), t
-        procs, ticks = processes(state.get("ticks", {}), dt, 0, state.get("wins", {}))
+        if fresh:                                 # sieťové spojenia po procesoch (iba vlastné) a NVIDIA procesy raz za 5 s
+            state["conns"] = connections_by_pid()
+            state["nvPids"] = nvidia_pids()
+        procs, ticks = processes(state.get("ticks", {}), dt, 0, state.get("wins", {}), state)
         if fresh or "devs" not in state:          # zariadenia tiež raz za 5 s
             state["devs"] = device_use(procs)
         devs = state["devs"]
+        state["gpuPids"] = {pid for pid, d in devs.items() if isinstance(pid, int) and "gpu" in d}
         for x in procs:
             x["dev"] = sorted(devs.get(x["pid"], ()))
         procs.sort(key=lambda x: (-x["cpu"], -x["rss"]))
@@ -368,8 +559,178 @@ def snapshot(state, with_procs=True):
         state["ticks"] = ticks
     if state.get("withSensors"):
         snap["sensors"] = sensors_all(state)
+        sensor_alerts(snap["sensors"], state)
     state.update(t=t, cpus=cpus, io=(rd, wr, rx, tx))
     return snap
+
+
+def tree_pids(root):
+    kids = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            st = read("/proc/%s/stat" % d)
+            try:
+                kids.setdefault(int(st[st.rindex(")") + 2:].split()[1]), []).append(int(d))
+            except (ValueError, IndexError):
+                pass
+    out, todo = [], [root]
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo += kids.get(p, [])
+    return out
+
+
+def proc_detail(pid):
+    st = read("/proc/%d/stat" % pid)
+    if not st:
+        return {"error": "proces už nebeží"}
+    f = st[st.rindex(")") + 2:].split()
+    boot = time.time() - float(read("/proc/uptime", "0").split()[0])
+    exe = ""
+    try:
+        exe = os.readlink("/proc/%d/exe" % pid)
+    except OSError:
+        pass
+    try:
+        cwd = os.readlink("/proc/%d/cwd" % pid)
+    except OSError:
+        cwd = ""
+    roll = dict(re.findall(r"^(\w+):\s+(\d+) kB", read("/proc/%d/smaps_rollup" % pid), re.M))
+    files = []
+    try:
+        for fd in os.listdir("/proc/%d/fd" % pid):
+            try:
+                t = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+            except OSError:
+                continue
+            if t.startswith("/") and not t.startswith(("/dev/", "/proc/", "/sys/", "/memfd:")):
+                files.append(t)
+    except OSError:
+        pass
+    conns = []
+    try:
+        for line in subprocess.run(["ss", "-tunpH"], capture_output=True, text=True, timeout=3).stdout.splitlines():
+            if "pid=%d," % pid in line:
+                p = line.split()
+                conns.append({"proto": p[0], "state": p[1], "local": p[4], "remote": p[5]})
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    origin = ""
+    cg = read("/proc/%d/cgroup" % pid)
+    m = re.search(r"app-flatpak-([\w.-]+?)-\d+\.scope", cg)
+    if m:
+        origin = "Flatpak " + m.group(1)
+    elif exe.startswith("/usr/") and shutil.which("rpm"):
+        r = subprocess.run(["rpm", "-qf", exe], capture_output=True, text=True, timeout=5).stdout.strip()
+        origin = ("balík " + r) if r and "not owned" not in r and "nie je" not in r else "mimo balíkov (ručne nainštalované)"
+    elif exe.startswith("/usr/"):
+        origin = "systém (" + os.path.dirname(exe) + ")"
+    elif exe:
+        origin = "mimo systému (" + os.path.dirname(exe) + ")"
+    ion = subprocess.run(["ionice", "-p", str(pid)], capture_output=True, text=True, timeout=3).stdout.strip() if shutil.which("ionice") else ""
+    return {"pid": pid, "state": STATE_SK.get(f[0], f[0]), "threads": int(f[17]), "nice": int(f[16]), "ionice": ion,
+            "start": int(boot + int(f[19]) / CLK), "exe": exe, "cwd": cwd, "origin": origin,
+            "pss": int(roll.get("Pss", 0)) * 1024, "swap": int(roll.get("Swap", 0)) * 1024,
+            "files": sorted(set(files))[:60], "conns": conns[:40], "cgroup": cg.rsplit(":", 1)[-1].strip()}
+
+
+def proc_action(pid, act, arg=""):
+    import signal
+    if act == "priorita":
+        n = {"nizka": 10, "normalna": 0, "vysoka": -5}.get(arg, 0)
+        io = {"nizka": ["-c", "2", "-n", "7"], "normalna": ["-c", "2", "-n", "4"], "vysoka": ["-c", "2", "-n", "0"]}.get(arg)
+        cmd = ["renice", "-n", str(n), "-p", str(pid)]
+        if n < 0:                                     # vyššia priorita než normálna: iba správca (polkit)
+            return subprocess.call(["pkexec"] + cmd)
+        rc = subprocess.call(cmd, stdout=subprocess.DEVNULL)
+        if io and shutil.which("ionice"):
+            subprocess.call(["ionice"] + io + ["-p", str(pid)], stderr=subprocess.DEVNULL)
+        return rc
+    if act == "usporny":
+        on = arg != "off"
+        for p in tree_pids(pid):
+            subprocess.call(["renice", "-n", "19" if on else "0", "-p", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if shutil.which("ionice"):
+                subprocess.call(["ionice", "-c", "3" if on else "2", "-p", str(p)], stderr=subprocess.DEVNULL)
+        return 0
+    if act in ("pauza", "pokracuj"):
+        sig = signal.SIGSTOP if act == "pauza" else signal.SIGCONT
+        for p in tree_pids(pid):
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+        return 0
+    if act == "ukonci-strom":
+        sig = signal.SIGKILL if arg == "kill" else signal.SIGTERM
+        for p in reversed(tree_pids(pid)):           # najprv potomkovia, potom rodič
+            try:
+                os.kill(p, sig)
+            except OSError:
+                pass
+        return 0
+    return 2
+
+
+def sensor_alerts(groups, state):
+    """upozornenie pri prekročení hranice (Senzory › pravý klik › Upozorniť nad…): oznámenie, najviac raz za 10 min"""
+    cfg = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "latteos", "senzory.json")
+    if time.monotonic() - state.get("alT", 0) > 10:
+        try:
+            state["alerts"] = json.load(open(cfg)).get("alerts", {})
+        except (OSError, ValueError):
+            state["alerts"] = {}
+        state["alT"] = time.monotonic()
+    al = state.get("alerts") or {}
+    if not al:
+        return
+    last = state.setdefault("alLast", {})
+    for g in groups:
+        for it in g["items"]:
+            lim = al.get(it["id"])
+            if lim is None or not isinstance(it.get("value"), (int, float)):
+                continue
+            if it["value"] > float(lim) and time.time() - last.get(it["id"], 0) > 600:
+                last[it["id"]] = time.time()
+                subprocess.Popen(["notify-send", "-a", "Monitor LatteOS", "-u", "critical", "-i", "dialog-warning",
+                                  "%s · %s" % (g["name"], it["label"]), "%s %s (hranica %s)" % (it["value"], it.get("unit", ""), lim)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def bench():
+    """test výkonu CPU; výsledok a história v ~/.local/state/latteos/bench.json"""
+    import zlib
+    res = {"time": int(time.time()), "cpu": (re.search(r"model name\s*: (.+)", read("/proc/cpuinfo")) or [None, "?"])[1].strip(),
+           "threads": os.cpu_count()}
+    z7 = shutil.which("7z") or shutil.which("7za") or shutil.which("7zz")
+    if z7:
+        def run7(extra):
+            t = subprocess.run([z7, "b", "-md22"] + extra, capture_output=True, text=True, timeout=300).stdout
+            m = re.search(r"^Tot:\s+\d+\s+\d+\s+(\d+)", t, re.M)
+            return int(m.group(1)) if m else 0
+        res.update(tool="7-Zip benchmark (MIPS)", single=run7(["-mmt1"]), multi=run7([]))
+    else:
+        data = os.urandom(1 << 20) * 8
+        def work(_):
+            t0, n = time.perf_counter(), 0
+            while time.perf_counter() - t0 < 3:
+                zlib.compress(data[:1 << 22], 6); n += 4
+            return n / (time.perf_counter() - t0)
+        single = work(0)
+        from concurrent.futures import ThreadPoolExecutor   # zlib počas kompresie uvoľní GIL → vlákna bežia naozaj súbežne
+        with ThreadPoolExecutor(os.cpu_count()) as ex:
+            multi = sum(ex.map(work, range(os.cpu_count())))
+        res.update(tool="zlib (MB/s)", single=round(single), multi=round(multi))
+    f = os.path.join(STATE_DIR, "bench.json")
+    try:
+        hist = json.load(open(f))
+    except (OSError, ValueError):
+        hist = []
+    hist = (hist + [res])[-20:]
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(hist, open(f, "w"))
+    return {"now": res, "history": hist}
 
 
 def desktop_entries():
@@ -410,8 +771,122 @@ def systemd_units(user):
             continue
         out.append({"id": unit, "kind": "timer" if unit.endswith(".timer") else ("user-service" if user else "service"),
                     "name": unit.rsplit(".", 1)[0], "command": "", "origin": "systemd --user" if user else "systemd (systém)",
-                    "owner": "používateľ" if user else "systém", "enabled": True, "canToggle": bool(user), "note": ""})
+                    "owner": "používateľ" if user else "systém", "enabled": True, "canToggle": True, "note": ""})
     return out
+
+
+def security_items():
+    """miesta, ktoré zneužíva malvér (Autoruns: Image hijacks, LSA…): preload knižníc, sudo, polkit, udev, Hyprland exec"""
+    out = []
+    pre = [l.strip() for l in read("/etc/ld.so.preload").splitlines() if l.strip() and not l.startswith("#")]
+    for lib in pre:                                    # bežný systém tu nemá nič — každá položka je podozrivá
+        out.append({"id": "preload:" + lib, "kind": "security", "name": "Načítanie knižnice do každého programu", "command": lib,
+                    "origin": "/etc/ld.so.preload", "owner": "systém", "enabled": True, "canToggle": False, "note": "pozor", "alert": True})
+    for d, what in (("/etc/sudoers.d", "Práva sudo"), ("/etc/polkit-1/rules.d", "Pravidlá polkit"), ("/etc/udev/rules.d", "Pravidlá udev")):
+        for p in sorted(glob.glob(d + "/*")):
+            if os.path.isfile(p):
+                out.append({"id": "sec:" + p, "kind": "security", "name": what + " · " + os.path.basename(p), "command": "", "origin": p,
+                            "owner": "systém", "enabled": True, "canToggle": False, "note": ""})
+    home = os.path.expanduser("~")
+    for p in sorted(glob.glob(home + "/.config/hypr/*.conf") + glob.glob(home + "/.config/hypr/*.lua") + [home + "/.config/latteos/hyprland.lua"]):
+        for i, line in enumerate(read(p).splitlines()):
+            m = re.match(r"\s*exec(?:-once)?\s*=\s*(.+)$", line) or re.search(r'exec_cmd\("([^"]+)"', line)
+            if m and not line.strip().startswith(("#", "--")):
+                out.append({"id": "hypr:%s:%d" % (p, i), "kind": "session", "name": m.group(1).split()[0], "command": m.group(1), "origin": p,
+                            "owner": "používateľ", "enabled": True, "canToggle": False, "note": "tvoja konfigurácia Hyprlandu"})
+    return out
+
+
+def autorun_enrich(items):
+    """pôvod položky (ako overenie podpisu v Autoruns), vplyv na štart, nové od zapamätaného stavu"""
+    files = sorted({x["origin"] for x in items if (x.get("origin") or "").startswith("/")})
+    owners = {}
+    if files and shutil.which("rpm"):
+        r = subprocess.run(["rpm", "-qf", "--qf", "%{NAME}\n"] + files, capture_output=True, text=True, timeout=20).stdout.splitlines()
+        for f, o in zip(files, r):
+            if o and " " not in o:
+                owners[f] = o
+    home = os.path.expanduser("~")
+    blame = {}
+    for user in (False, True):
+        try:
+            t = subprocess.run(["systemd-analyze"] + (["--user"] if user else []) + ["blame", "--no-pager"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for line in t.splitlines():
+            m = re.match(r"\s*(?:(\d+)min\s*)?(?:([\d.]+)s|([\d.]+)ms)\s+(\S+)", line)
+            if m:
+                ms = int(m.group(1) or 0) * 60000 + float(m.group(2) or 0) * 1000 + float(m.group(3) or 0)
+                blame[m.group(4)] = round(ms)
+    known = {}
+    try:
+        known = json.load(open(os.path.join(STATE_DIR, "autorun-znam.json")))
+    except (OSError, ValueError):
+        pass
+    for x in items:
+        o = x.get("origin") or ""
+        if x["kind"] == "session" and o.startswith("/usr/share/latteos"):
+            x["src"] = "LatteOS"
+        elif o in owners:
+            x["src"] = "LatteOS" if owners[o].startswith("latte") else "balík " + owners[o]
+        elif "flatpak" in o or "flatpak" in (x.get("command") or ""):
+            x["src"] = "Flatpak"
+        elif o.startswith(home) or x["owner"] == "používateľ":
+            x["src"] = "tvoje"
+        elif x["kind"] in ("service", "timer") and not o.startswith("/"):
+            x["src"] = "systém"
+        else:
+            x["src"] = "neznáme"                       # systémový súbor, ktorý nepatrí žiadnemu balíku → stojí za pohľad
+        x["system"] = x["src"].startswith("balík") or x["src"] in ("systém", "LatteOS")
+        if x["id"] in blame:
+            x["impact"] = blame[x["id"]]
+        if known.get("ids"):
+            x["new"] = x["id"] not in known["ids"]
+    return items, known.get("time", 0)
+
+
+def services(user):
+    base = ["systemctl"] + (["--user"] if user else [])
+    try:
+        units = json.loads(subprocess.run(base + ["list-units", "--type=service", "--all", "-o", "json", "--no-pager"], capture_output=True, text=True, timeout=8).stdout or "[]")
+        files = json.loads(subprocess.run(base + ["list-unit-files", "--type=service", "-o", "json", "--no-pager"], capture_output=True, text=True, timeout=8).stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+    state = {f.get("unit_file"): f.get("state") for f in files}
+    out = []
+    for u in units:
+        if u.get("load") == "not-found":
+            continue
+        out.append({"unit": u.get("unit"), "desc": u.get("description", ""), "active": u.get("active"), "sub": u.get("sub"),
+                    "enabled": state.get(u.get("unit"), ""), "scope": "user" if user else "system"})
+    return out
+
+
+def users_info():
+    out = {}
+    try:
+        sess = json.loads(subprocess.run(["loginctl", "list-sessions", "-o", "json", "--no-pager"], capture_output=True, text=True, timeout=5).stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        sess = []
+    for x in sess:
+        u = out.setdefault(x.get("user", "?"), {"user": x.get("user", "?"), "uid": x.get("uid"), "sessions": [], "procs": 0, "rss": 0})
+        u["sessions"].append({"id": x.get("session"), "seat": x.get("seat") or "", "tty": x.get("tty") or "", "remote": bool(x.get("remote"))})
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            uid = os.stat("/proc/" + d).st_uid
+        except OSError:
+            continue
+        name = user_of(uid)
+        if name in out:
+            st = read("/proc/%s/stat" % d)
+            try:
+                out[name]["procs"] += 1
+                out[name]["rss"] += int(st[st.rindex(")") + 2:].split()[21]) * PAGE
+            except (ValueError, IndexError):
+                pass
+    return list(out.values())
 
 
 def cron():
@@ -754,6 +1229,20 @@ def sensors_all(state):
     g("Systém", "info-circle", [{"id": "sys.load1", "label": "Záťaž (1 min)", "value": float(la[0]) if la else 0, "unit": ""},
                                 {"id": "sys.procs", "label": "Bežiace procesy", "value": int(la[3].split("/")[1]) if len(la) > 3 else 0, "unit": ""}])
     state["sT"] = t
+    # spomaľovanie pri prehriatí (Intel thermal_throttle): rastúci počet = procesor sa brzdí kvôli teplote
+    thr = [int(read(f, "0") or 0) for f in glob.glob("/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count")]
+    pk = [int(read(f, "0") or 0) for f in glob.glob("/sys/devices/system/cpu/cpu*/thermal_throttle/package_throttle_count")]
+    if thr or pk:
+        g("Prehrievanie (spomalenia)", "alert-triangle", [{"id": "cpu.throttle.core", "label": "Spomalenia jadier", "value": sum(thr), "unit": "×"},
+                                                          {"id": "cpu.throttle.pkg", "label": "Spomalenia procesora", "value": max(pk) if pk else 0, "unit": "×"}])
+    nv = nvidia_gpu()                                   # NVIDIA (proprietárny ovládač): nvidia-smi
+    if nv:
+        items = [{"id": "gpu.nv.%s" % k, "label": lbl, "value": v, "unit": u} for k, lbl, v, u in (
+            ("busy", "Záťaž GPU", nv["busy"], "%"), ("vram", "Použitá VRAM", round(nv["vramUsed"] / 2**20), "MB"),
+            ("temp", "Teplota GPU", nv["temp"], "°C"), ("clk", "Takt jadra GPU", nv["clock"], "MHz"),
+            ("mclk", "Takt pamäte GPU", nv["memClock"], "MHz"), ("power", "Príkon GPU", nv["power"], "W"),
+            ("fan", "Ventilátor GPU", nv["fan"], "%")) if v is not None]
+        g("Grafika NVIDIA · " + nv.get("name", ""), "cpu", items)
     return groups
 
 
@@ -834,6 +1323,15 @@ def hardware():
         dev = "/sys/bus/pci/devices/" + (g["slot"] if g["slot"].count(":") == 2 else "0000:" + g["slot"])
         g["link"] = (read(dev + "/current_link_speed") + " ×" + read(dev + "/current_link_width")).strip(" ×") if read(dev + "/current_link_speed") else ""
         g["linkMax"] = (read(dev + "/max_link_speed") + " ×" + read(dev + "/max_link_width")).strip(" ×") if read(dev + "/max_link_speed") else ""
+    nv = nvidia_gpu()
+    compat = subprocess.run(["latte-boot", "compat", "--toml"], capture_output=True, text=True, timeout=10).stdout if shutil.which("latte-boot") else ""
+    fams = [dict(re.findall(r'^(\w+) = "?([^"\n]*)"?$', b, re.M)) for b in compat.split("[[platform.gpu]]")[1:]]
+    for i, g in enumerate(gpus):
+        if nv and "nvidia" in (g.get("vendor", "") + g.get("name", "")).lower() and not g.get("vram"):
+            g["vram"] = nv["vramTotal"]
+        if i < len(fams):                             # generácia karty a odporúčaný ovládač (latte-hw::compat)
+            f = fams[i].get
+            g.update(family=f("family", ""), year=f("year", ""), driverRec=f("driver", ""), vulkanOk=f("vulkan", ""), maxTier=f("max_tier", ""))
     info["gpu"] = gpus
     gl = {}
     try:
@@ -1151,14 +1649,113 @@ def pohoda_day(date_s, only=None):
             "app": ident(only) if only else None}
 
 
+# ── pás výkonu GooPower (engine Goo): iba to, čo pás ukazuje ────────────────────────────────────────────────────
+def temp_of(names, labels):
+    """teplota (°C) prvého senzora hwmon s menom z `names`; prednosť má štítok z `labels` (Tctl, Package id 0, edge)"""
+    best = None
+    for d in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        if read(d + "/name").strip() not in names:
+            continue
+        for t in sorted(glob.glob(d + "/temp*_input")):
+            try:
+                c = int(read(t).strip()) / 1000
+            except ValueError:
+                continue
+            label = read(t.replace("_input", "_label")).strip()
+            if label in labels:
+                return round(c)
+            if best is None:
+                best = round(c)
+    return best
+
+
+def top_process(prev, dt):
+    """najnáročnejší proces na CPU od minulého merania (meno, % jedného jadra) — pre bublinu pásu"""
+    now, best = {}, (None, 0.0)
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        st = read("/proc/%s/stat" % d)
+        r = st.rfind(")")
+        if r < 0:
+            continue
+        f = st[r + 2:].split()
+        try:
+            ticks = int(f[11]) + int(f[12])
+        except (IndexError, ValueError):
+            continue
+        now[d] = ticks
+        if d in prev and dt > 0:
+            pct = 100.0 * (ticks - prev[d]) / CLK / dt
+            if pct > best[1]:
+                best = (st[st.find("(") + 1:r], pct)
+    return now, ({"name": best[0], "cpu": round(best[1])} if best[0] else None)
+
+
+def goo_stream(every):
+    """pás výkonu GooPower: jeden JSON riadok každých `every` s (CPU, RAM, GPU, VRAM, teploty)"""
+    prev = cpu_times()[0]
+    t0 = time.monotonic()
+    procs, top = {}, None
+    procs, _ = top_process({}, 0)
+    n = 0
+    while True:
+        time.sleep(every)
+        cur = cpu_times()[0]
+        d = cur[0] - prev[0]
+        cpu = round(100.0 * (1 - (cur[1] - prev[1]) / d)) if d > 0 else 0
+        prev = cur
+        n += 1
+        if n % 2 == 0:                                       # najnáročnejší proces stačí raz za 2 s (prechádza /proc)
+            t = time.monotonic()
+            procs, top = top_process(procs, t - t0)
+            t0 = t
+        mem = meminfo()
+        g = gpu_busy() or {}
+        gt = temp_of(("amdgpu", "nouveau", "radeon", "i915", "xe"), ("edge", "junction"))
+        if gt is None and g.get("vendor") == "nvidia":
+            gt = g.get("temp")
+        out = {"cpu": max(0, min(100, cpu)), "cpuT": temp_of(("k10temp", "coretemp", "zenpower", "cpu_thermal", "acpitz"), ("Tctl", "Tdie", "Package id 0")),
+               "mhz": cpu_freq(), "top": top, "ram": mem["used"], "ramT": mem["total"], "swap": mem["swapUsed"],
+               "gpu": g.get("busy"), "gpuT": gt, "vram": g.get("vramUsed"), "vramT": g.get("vramTotal")}
+        try:
+            sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            return 0
+
+
 def main(a):
     cmd = a[0] if a else "once"
     state = {}
-    if cmd == "autorun":
-        items = desktop_entries() + session_items() + systemd_units(True) + systemd_units(False) + cron() + login_scripts() + kernel_modules()
+    if cmd == "proces" and len(a) >= 2 and a[1].isdigit():
+        if len(a) == 2:
+            print(json.dumps(proc_detail(int(a[1])), ensure_ascii=False))
+            return 0
+        return proc_action(int(a[1]), a[2], a[3] if len(a) > 3 else "")
+    if cmd in ("autorun", "autorun-znam"):
+        items = desktop_entries() + session_items() + systemd_units(True) + systemd_units(False) + cron() + login_scripts() + kernel_modules() + security_items()
         for x in items:
             x["missing"] = bool(x.get("command")) and x["kind"] in ("autostart", "session", "cron") and not exists_cmd(x["command"] if x["kind"] != "cron" else " ".join(x["command"].split()[5:]))
+        if cmd == "autorun-znam":
+            os.makedirs(STATE_DIR, exist_ok=True)
+            json.dump({"time": int(time.time()), "ids": [x["id"] for x in items]}, open(os.path.join(STATE_DIR, "autorun-znam.json"), "w"))
+            return 0
+        items, since = autorun_enrich(items)
+        for x in items:
+            x["since"] = since
         print(json.dumps(items, ensure_ascii=False))
+        return 0
+    if cmd == "bench":
+        print(json.dumps(bench(), ensure_ascii=False))
+        return 0
+    if cmd == "sluzby":
+        print(json.dumps(services(False) + services(True), ensure_ascii=False))
+        return 0
+    if cmd == "sluzba" and len(a) == 4 and a[1] in ("system", "user") and a[2] in ("start", "stop", "restart", "enable", "disable"):
+        return subprocess.call(["systemctl"] + (["--user"] if a[1] == "user" else []) + [a[2], a[3]])
+    if cmd == "pouzivatelia":
+        print(json.dumps(users_info(), ensure_ascii=False))
         return 0
     if cmd == "zvuk":
         def pj(*args):
@@ -1219,6 +1816,8 @@ def main(a):
         time.sleep(0.3)
         print(json.dumps(snapshot(state, False), ensure_ascii=False))
         return 0
+    if cmd == "goo":
+        return goo_stream(float(a[1]) if len(a) > 1 else 1.0)
     if cmd == "stream":
         every = float(a[1]) if len(a) > 1 else 1.0
         os.makedirs(RUN, exist_ok=True)

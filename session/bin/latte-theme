@@ -5,6 +5,8 @@
 #   latte-theme set <id>      prepne tému: paleta a režim Noctalie, tapeta, okraje okien Hyprlandu
 #   latte-theme workspace <n>  tapeta podľa plochy: n-tá tapeta z /usr/share/backgrounds/latteos (ak je zapnuté)
 #   latte-theme mode [tema|dark|light|auto]
+#   latte-theme noctalia      farby aktuálnej témy do bežiacej Noctalie (pri jej štarte: klasický LatteOS a Kvapky
+#                             majú oddelený stav Noctalie, téma je spoločná)
 #                             svetlá/tmavá verzia: podľa témy, vždy tmavá, vždy svetlá, alebo automaticky
 #                             podľa východu a západu slnka (poloha: Nastavenia › Systém › Dátum a čas)
 # Voľba sa ukladá do ~/.config/latteos/theme; Lua modul Hyprlandu si z nej berie farby a efekty.
@@ -37,6 +39,10 @@ set)
     [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && hyprctl reload >/dev/null 2>&1
     notify-send -a LatteOS "Téma" "$(get "$id" name)" 2>/dev/null
     echo "téma: $(get "$id" name)" ;;
+noctalia)
+    id="$(current)"
+    noctalia msg color-scheme-set custom "$(get "$id" palette)" >/dev/null 2>&1
+    noctalia msg theme-mode-set "$(effmode "$id")" >/dev/null 2>&1 ;;
 workspace)
     [ -e "$cfg/wallpaper-per-workspace" ] || exit 0
     n="${2:-1}"; case "$n" in ''|*[!0-9]*) exit 2 ;; esac

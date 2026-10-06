@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# latte-hra — prepínač „Desktop ↔ Hra“ v tom istom prihlásení (ako SteamOS, bez nového hesla).
+#   latte-hra            z plochy LatteOS do hernej relácie (Steam Big Picture v gamescope)
+#   latte-hra desktop    z hernej relácie späť na plochu (to isté robí Steam › Prepnúť na desktop)
+#   latte-hra stav       dostupnosť: „ok“, alebo dôvod, prečo herná relácia nejde
+# Hernú reláciu spúšťa latte-session cez hotový gamescope-session-plus (ChimeraOS, balík z Terra ako v Bazzite);
+# latte-hra iba zapíše, kam ísť, a ukončí aktuálnu reláciu.
+set -u
+flag="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/relacia"
+mkdir -p "$(dirname "$flag")"
+
+dostupna() {
+    [ -r /run/latteos/session.env ] && . /run/latteos/session.env
+    [ "${LATTE_RENDERER:-}" = hw ] || { echo "herná relácia potrebuje grafickú kartu (teraz: ${LATTE_RENDERER:-?})"; return 1; }
+    command -v gamescope-session-plus >/dev/null || { echo "chýba gamescope-session (setup/lab/install.sh)"; return 1; }
+    command -v steam >/dev/null || { echo "chýba natívny Steam (dnf install steam)"; return 1; }
+    echo ok
+}
+
+case "${1:-hra}" in
+    stav) dostupna ;;
+    hra)
+        why="$(dostupna)" || { notify-send -a LatteOS "Herný režim nejde" "$why" 2>/dev/null; echo "$why" >&2; exit 1; }
+        echo hra > "$flag"
+        noctalia msg session logout 2>/dev/null || hyprctl dispatch exit >/dev/null
+        ;;
+    desktop)
+        echo desktop > "$flag"
+        steam -shutdown >/dev/null 2>&1 &
+        ;;
+    *) sed -n '2,5p' "$0"; exit 1 ;;
+esac

@@ -33,13 +33,15 @@ DEV=(git gcc-c++ cmake meson ninja-build rust cargo golang
 # --- F1 testy: seatd (kompozitor zo SSH), GL klienti, rozlíšenie ------------------
 TEST=(seatd kitty wlr-randr)
 # --- AI (CPU, malý model; služba sa nepovoľuje) --------------------------------
-AI=(ollama)
+AI=(ollama nodejs-npm)   # npm: nástroje predplatných (ChatGPT, Gemini, Copilot) inštaluje Nastavenia › AI bez sudo
+# --- hľadanie súborov (latte-hladaj): index mien, živé hľadanie, obsah ----------
+FIND=(plocate fd-find ripgrep python3-pyyaml)   # + kurátorský výber obchodu (YAML)
 
 dnf -y install dnf5-plugins
 dnf -y copr enable lionheartp/Hyprland
 
 dnf -y install "${GRAPHICS[@]}" "${VM[@]}" "${SESSION[@]}" "${HYPR[@]}" \
-               "${QT[@]}" "${FONTS[@]}" "${DEV[@]}" "${TEST[@]}" "${AI[@]}"
+               "${QT[@]}" "${FONTS[@]}" "${DEV[@]}" "${TEST[@]}" "${AI[@]}" "${FIND[@]}"
 
 [ ${#VM[@]} -eq 0 ] || systemctl enable --now vboxservice.service || true
 systemctl enable --now seatd.service || true

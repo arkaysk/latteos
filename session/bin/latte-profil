@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# latte-profil — každé prostredie má svoje nastavenia aj tam, kde ich prostredia zdieľajú (30. 9. 2026: „ak by som
+# skúsil napr. Plasmu, nech nepoškodí moje vlastné prostredia“). Zdieľané sú: GTK (settings.ini, gtk.css,
+# ~/.gtkrc-2.0), dconf (písmo, mierka, ikony, kurzor, tmavý režim, tlačidlá okien), predvolené aplikácie
+# (mimeapps.list) a kurzor (~/.icons/default). Plasma, GNOME aj LatteOS ich prepisujú.
+#   latte-profil vstup <profil>   pri prihlásení: zdieľaný stav odloží ako „cudzie“, obnoví <profil>
+#   latte-profil odchod <profil>  pri odhlásení: uloží <profil>, vráti „cudzie“
+#   latte-profil stav             ktorý profil je práve vo zdieľaných súboroch
+# Profily: ~/.local/state/latteos/profily/<meno>/ (latteos = klasický aj Kvapky, noctalia = Noctalia (čistá)).
+# Po páde (odchod neprebehol) ostane značka „aktivny“ — ďalší vstup potom „cudzie“ neprepíše stavom LatteOS.
+# LATTE_PROFIL_BEZ_DCONF=1: iba súbory (testy).
+set -u
+root="${XDG_STATE_HOME:-$HOME/.local/state}/latteos/profily"
+mark="$root/aktivny"
+files=(
+    .config/gtk-3.0/settings.ini .config/gtk-3.0/gtk.css
+    .config/gtk-4.0/settings.ini .config/gtk-4.0/gtk.css
+    .gtkrc-2.0 .config/mimeapps.list .icons/default/index.theme
+)
+dirs=(/org/gnome/desktop/interface/ /org/gnome/desktop/wm/preferences/)
+
+save() {   # $1 profil: zdieľaný stav → profil (aj ktoré súbory NEexistujú — tie sa pri obnove odložia)
+    local d="$root/$1" f
+    rm -rf "$d.new"; mkdir -p "$d.new/subory"
+    for f in "${files[@]}"; do
+        if [ -e "$HOME/$f" ]; then mkdir -p "$d.new/subory/$(dirname "$f")"; cp -a "$HOME/$f" "$d.new/subory/$f"
+        else echo "$f" >> "$d.new/chyba"; fi
+    done
+    if [ -z "${LATTE_PROFIL_BEZ_DCONF:-}" ] && command -v dconf >/dev/null; then
+        for f in "${dirs[@]}"; do dconf dump "$f" > "$d.new/dconf$(echo "$f" | tr / _).ini" 2>/dev/null; done
+    fi
+    rm -rf "$d"; mv "$d.new" "$d"
+}
+
+restore() {   # $1 profil → zdieľaný stav; bez uloženého profilu nerobí nič
+    local d="$root/$1" f aside
+    [ -d "$d" ] || return 0
+    for f in "${files[@]}"; do
+        if [ -e "$d/subory/$f" ]; then mkdir -p "$HOME/$(dirname "$f")"; cp -a "$d/subory/$f" "$HOME/$f"; fi
+    done
+    # súbory, ktoré profil nemal: odložiť (nie zmazať — patria inému prostrediu, ktoré ich vytvorilo)
+    if [ -f "$d/chyba" ]; then
+        aside="$root/odlozene/$(date +%Y%m%d-%H%M%S)-$1"
+        while read -r f; do
+            [ -e "$HOME/$f" ] || continue
+            mkdir -p "$aside/$(dirname "$f")"; mv "$HOME/$f" "$aside/$f"
+        done < "$d/chyba"
+    fi
+    if [ -z "${LATTE_PROFIL_BEZ_DCONF:-}" ] && command -v dconf >/dev/null; then
+        for f in "${dirs[@]}"; do
+            local ini="$d/dconf$(echo "$f" | tr / _).ini"
+            [ -f "$ini" ] || continue
+            dconf reset -f "$f" 2>/dev/null; dconf load "$f" < "$ini" 2>/dev/null
+        done
+    fi
+}
+
+case "${1:-}" in
+    vstup)
+        p="${2:?profil}"; mkdir -p "$root"
+        if [ -f "$mark" ]; then
+            echo "profil: predošlá relácia ($(cat "$mark")) neodišla riadne — „cudzie“ ostávajú, obnovujem $p"
+        else
+            save cudzie
+        fi
+        restore "$p"; echo "$p" > "$mark" ;;
+    odchod)
+        p="${2:?profil}"
+        save "$p"; restore cudzie; rm -f "$mark" ;;
+    stav)
+        if [ -f "$mark" ]; then cat "$mark"; else echo "cudzie (žiadne prostredie LatteOS)"; fi ;;
+    *)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

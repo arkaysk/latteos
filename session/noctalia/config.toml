@@ -1,7 +1,8 @@
 # LatteOS — predvolená konfigurácia Noctalie (/usr/share/latteos/noctalia/config.toml).
 # latte-session nastaví NOCTALIA_CONFIG_HOME=/usr/share/latteos, ak používateľ nemá vlastný
-# ~/.config/noctalia/config.toml. Zmeny z Nastavení (GUI) ukladá Noctalia do
-# ~/.local/state/noctalia/settings.toml, takže tento súbor ostáva nemenný základ.
+# ~/.config/latteos/noctalia/config.toml. Zmeny z Nastavení (GUI) ukladá Noctalia do
+# ~/.local/state/latteos/noctalia/settings.toml (NOCTALIA_STATE_HOME), takže tento súbor ostáva nemenný základ.
+# Pôvodná Noctalia (~/.config/noctalia, ~/.local/state/noctalia) je oddelená — relácia „Noctalia (čistá)“.
 #
 # Vzhľad podľa inspo/LatteOS – návrh plochy: jedna spodná lišta z oddelených ostrovov, teplé
 # tmavé sklo, akcent karamel. Paleta: palettes/Latte.json.

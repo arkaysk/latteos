@@ -1,0 +1,343 @@
+#!/usr/bin/python3
+"""latte-riadok — obsah pre riadok spúšťača Kvapiek (logika pleamaru nevie čítať súbory ani sieť).
+Všetko vracia riadky s tabulátormi, aby ich spúšťač ukázal ako klikateľné výsledky (myš prvá, klávesy doplnok).
+
+  latte-riadok akcie DESKTOP_ID          akcie aplikácie z .desktop (Nové okno, Súkromné okno…): meno<TAB>príkaz
+  latte-riadok nastavenia DOTAZ          stránky Nastavení podľa slov („wifi“ → Sieť): meno<TAB>oblasť<TAB>stránka
+  latte-riadok pocitaj VÝRAZ             kalkulačka a prevody: „15% z 230“, „2^10“, „5 eur v czk“, „10 km v mil“
+                                         → výsledok<TAB>popis (nič, ak to nie je výpočet)
+  latte-riadok navrhy SLUŽBA DOTAZ       návrhy vyhľadávača počas písania (google | duckduckgo | bing | …), po riadkoch
+  latte-riadok dopln TEXT                dopĺňanie posledného slova príkazu: príkazy a cesty, po riadkoch
+  latte-riadok vystup PRÍKAZ             krátky výstup bezpečného príkazu (df, free, ip a…) priamo v spúšťači;
+                                         iné príkazy: kód 3 (spustiť v termináli)
+  latte-riadok zaznam DESKTOP_ID         zapamätá spustenie (hodina, deň v týždni)
+  latte-riadok caste [N]                 najčastejšie aplikácie pre túto dennú dobu a deň (id po riadkoch)
+"""
+import json, math, os, re, shlex, subprocess, sys, time, unicodedata, urllib.parse, urllib.request
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "latteos")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos")
+
+
+def fold(s):
+    return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
+
+
+# ── akcie aplikácie ──────────────────────────────────────────────────────────────────────────
+def desktop_dirs():
+    xdg = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")
+    return [HOME + "/.local/share/applications", HOME + "/.local/share/flatpak/exports/share/applications",
+            "/var/lib/flatpak/exports/share/applications"] + [d + "/applications" for d in xdg]
+
+
+def akcie(did):
+    did = did if did.endswith(".desktop") else did + ".desktop"
+    for d in desktop_dirs():
+        p = os.path.join(d, did)
+        if not os.path.exists(p):
+            continue
+        sec, names, execs, lang = None, {}, {}, (os.environ.get("LANG", "sk")[:2])
+        for line in open(p, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            m = re.match(r"^\[Desktop Action (.+)\]$", line)
+            if m:
+                sec = m.group(1); continue
+            if line.startswith("["):
+                sec = None; continue
+            if sec and "=" in line:
+                k, v = line.split("=", 1)
+                if k == "Name" or (k == "Name[%s]" % lang):
+                    if k != "Name" or sec not in names:
+                        names[sec] = v
+                elif k == "Exec":
+                    execs[sec] = re.sub(r"\s*%[fFuUdDnNickvm]", "", v)
+        for s, n in names.items():
+            if s in execs:
+                print("%s\t%s" % (n, execs[s]))
+        return
+
+
+# ── stránky Nastavení ────────────────────────────────────────────────────────────────────────
+SETTINGS = [  # (oblasť, stránka, meno, kľúčové slová)
+    ("hardver", "siet", "Sieť", "wifi wi-fi internet ethernet kabel vpn ip proxy siet"),
+    ("hardver", "bluetooth", "Bluetooth a periférie", "bluetooth sluchadla reproduktor ovladac gamepad sparovat"),
+    ("hardver", "zvuk", "Zvuk", "zvuk hlasitost mikrofon reproduktor sluchadla audio volume"),
+    ("hardver", "obrazovky", "Obrazovky", "monitor obrazovka rozlisenie displej hz frekvencia mierka nocne svetlo"),
+    ("hardver", "vstup", "Myš, touchpad a ovládače", "mys touchpad kurzor koliesko citlivost ovladac"),
+    ("hardver", "tlac", "Tlač a skenovanie", "tlaciaren tlac skener"),
+    ("hardver", "napajanie", "Napájanie", "bateria napajanie uspora spanok vypnutie"),
+    ("hardver", "vykon", "Výkon a grafika", "vykon grafika gpu stupen animacie ovladac nvidia amd"),
+    ("hardver", "hry", "Hry a herný režim", "hry herny rezim steam gamescope"),
+    ("hardver", "diagnostika", "Diagnostika a pády", "pad diagnostika chyba log"),
+    ("prostredie", "motiv", "Motív a farby", "tema motiv farby tmavy svetly vzhlad"),
+    ("prostredie", "pismo", "Písmo a mierka", "pismo font velkost mierka"),
+    ("prostredie", "pozadie", "Pozadie", "tapeta pozadie wallpaper"),
+    ("prostredie", "okna", "Okná", "okna paska dlazdice plavajuce"),
+    ("prostredie", "lista", "Lišta a systémové menu", "lista panel kvapky"),
+    ("prostredie", "oznamenia", "Oznámenia", "oznamenia notifikacie nerusit"),
+    ("prostredie", "efekty", "Animácie a efekty", "animacie efekty blur sklo"),
+    ("prostredie", "pristupnost", "Prístupnosť", "pristupnost lupa kontrast citacka"),
+    ("ucet", "mojucet", "Môj účet", "ucet meno obrazok profil"),
+    ("ucet", "heslo", "Heslo a zabezpečenie", "heslo pin odtlacok"),
+    ("ucet", "pouzivatelia", "Používatelia", "pouzivatelia ucty rodina"),
+    ("ucet", "uzamknutie", "Uzamknutie a nečinnosť", "zamknutie uzamknutie necinnost setric"),
+    ("softver", "aplikacie", "Aplikácie", "aplikacie programy odinstalovat"),
+    ("softver", "predvolene", "Predvolené aplikácie", "predvolene otvarat prehliadac"),
+    ("softver", "aktualizacie", "Aktualizácie", "aktualizacie update"),
+    ("softver", "ai", "AI", "ai umela inteligencia claude chatgpt gemini ollama model"),
+    ("softver", "spustanie", "Spúšťanie a na pozadí", "spustanie autostart pozadie"),
+    ("softver", "sukromie", "Súkromie a NET", "sukromie net kamera mikrofon opravnenia"),
+    ("data", "zalohy", "Zálohovanie a obnova", "zaloha zalohovanie obnova"),
+    ("data", "synchronizacia", "Cloud a synchronizácia", "cloud onedrive google drive dropbox nextcloud"),
+    ("data", "ulozisko", "Úložisko", "disk uloziste miesto"),
+    ("system", "cas", "Dátum, čas a poloha", "datum cas casove pasmo poloha"),
+    ("system", "jazyk", "Jazyk a región", "jazyk region preklad"),
+    ("system", "klavesnica", "Klávesnica a skratky", "klavesnica skratky rozlozenie"),
+    ("system", "bezpecnost", "Bezpečnosť", "bezpecnost firewall"),
+    ("system", "schranka", "Schránka (Kapsa)", "schranka kapsa"),
+    ("system", "start", "Štart a režim", "start safe rezim"),
+    ("system", "o", "O LatteOS", "verzia o systeme info"),
+]
+
+
+def nastavenia(q):
+    q = fold(q).strip()
+    if len(q) < 2:
+        return
+    out = []
+    for area, page, name, kw in SETTINGS:
+        words = kw.split() + fold(name).split()
+        if any(w.startswith(q) for w in words) or q in fold(name):
+            out.append((0 if fold(name).startswith(q) else 1, name, area, page))
+    for _, name, area, page in sorted(out)[:3]:
+        print("%s\t%s\t%s" % (name, area, page))
+
+
+# ── kalkulačka a prevody ─────────────────────────────────────────────────────────────────────
+UNITS = {  # jednotka → (veličina, násobok základnej)
+    "mm": ("d", 0.001), "cm": ("d", 0.01), "m": ("d", 1), "km": ("d", 1000), "in": ("d", 0.0254), "palec": ("d", 0.0254),
+    "ft": ("d", 0.3048), "stopa": ("d", 0.3048), "yd": ("d", 0.9144), "mi": ("d", 1609.344), "mil": ("d", 1609.344), "mile": ("d", 1609.344),
+    "g": ("w", 0.001), "dkg": ("w", 0.01), "kg": ("w", 1), "t": ("w", 1000), "lb": ("w", 0.45359237), "oz": ("w", 0.028349523),
+    "ml": ("v", 0.001), "dl": ("v", 0.1), "l": ("v", 1), "gal": ("v", 3.785411784),
+    "b": ("b", 1), "kb": ("b", 1e3), "mb": ("b", 1e6), "gb": ("b", 1e9), "tb": ("b", 1e12), "kib": ("b", 1024), "mib": ("b", 1048576), "gib": ("b", 1073741824),
+    "s": ("s", 1), "min": ("s", 60), "h": ("s", 3600), "hod": ("s", 3600), "den": ("s", 86400), "dni": ("s", 86400),
+    "kmh": ("r", 1 / 3.6), "km/h": ("r", 1 / 3.6), "ms": ("r", 1), "m/s": ("r", 1), "mph": ("r", 0.44704),
+}
+CURRENCIES = {"eur", "usd", "czk", "huf", "pln", "gbp", "chf", "jpy", "uah", "sek", "nok", "dkk", "cad", "aud", "cny", "ron", "bgn", "try"}
+CUR_ALIAS = {"€": "eur", "euro": "eur", "eura": "eur", "eur": "eur", "$": "usd", "dolar": "usd", "dolarov": "usd", "kc": "czk",
+             "korun": "czk", "koruna": "czk", "ft": "huf", "forint": "huf", "zl": "pln", "zloty": "pln", "libra": "gbp", "£": "gbp"}
+
+
+def fmt(x):
+    if abs(x - round(x)) < 1e-9 and abs(x) < 1e15:
+        s = "{:,}".format(int(round(x)))
+    else:
+        s = "{:,.6g}".format(x) if abs(x) < 1e-3 or abs(x) >= 1e9 else "{:,.4f}".format(x).rstrip("0").rstrip(".")
+    return s.replace(",", " ").replace(".", ",")
+
+
+def rates():
+    """kurzy ECB (EUR základ), raz denne do vyrovnávacej pamäte"""
+    p = os.path.join(CACHE, "kurzy.json")
+    try:
+        if time.time() - os.path.getmtime(p) < 86400:
+            return json.load(open(p))
+    except OSError:
+        pass
+    try:
+        xml = urllib.request.urlopen("https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml", timeout=4).read().decode()
+        r = {"eur": 1.0}
+        for cur, rate in re.findall(r"currency='(\w+)' rate='([\d.]+)'", xml):
+            r[cur.lower()] = float(rate)
+        os.makedirs(CACHE, exist_ok=True)
+        json.dump(r, open(p, "w"))
+        return r
+    except Exception:
+        try:
+            return json.load(open(p))
+        except (OSError, ValueError):
+            return None
+
+
+def safe_eval(expr):
+    expr = expr.replace("^", "**").replace("×", "*").replace("÷", "/").replace(":", "/")
+    expr = re.sub(r"(\d),(\d)", r"\1.\2", expr)
+    expr = re.sub(r"(\d)\s+(\d{3})(?!\d)", r"\1\2", expr)              # „1 000“
+    if not re.fullmatch(r"[\d\s.+\-*/()%a-z]*", expr) or not re.search(r"\d", expr):
+        return None
+    names = {"sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan, "log": math.log10, "ln": math.log,
+             "pi": math.pi, "e": math.e, "abs": abs, "round": round}
+    for w in re.findall(r"[a-z]+", expr):
+        if w not in names:
+            return None
+    expr = re.sub(r"(\d+(?:\.\d+)?)%", r"(\1/100)", expr)
+    try:
+        v = eval(expr, {"__builtins__": {}}, names)
+        return float(v) if isinstance(v, (int, float)) else None
+    except Exception:
+        return None
+
+
+def pocitaj(q):
+    t = fold(q).strip().rstrip("=").strip()
+    num = r"(\d+(?:[.,]\d+)?(?:\s\d{3})*)"
+    # percentá: „15% z 230“, „15 % zo 230“
+    m = re.fullmatch(num + r"\s*%\s*(?:z|zo|of)\s*" + num, t)
+    if m:
+        a, b = float(m.group(1).replace(",", ".").replace(" ", "")), float(m.group(2).replace(",", ".").replace(" ", ""))
+        print("%s\t%s %% z %s" % (fmt(a * b / 100), fmt(a), fmt(b)))
+        return
+    # prevod: „5 eur v czk“, „10 km na mil“, „100 kmh to mph“
+    m = re.fullmatch(num + r"\s*([a-z€$£/]+)\s+(?:v|na|do|to|in|=)\s+([a-z€$£/]+)", t)
+    if m:
+        x = float(m.group(1).replace(",", ".").replace(" ", ""))
+        a, b = m.group(2), m.group(3)
+        ca, cb = CUR_ALIAS.get(a, a), CUR_ALIAS.get(b, b)
+        if ca in CURRENCIES and cb in CURRENCIES:
+            r = rates()
+            if r and ca in r and cb in r:
+                print("%s %s\t%s %s · kurz ECB" % (fmt(x / r[ca] * r[cb]), cb.upper(), fmt(x), ca.upper()))
+            return
+        if a in ("c", "°c") and b in ("f", "°f"):
+            print("%s °F\t%s °C" % (fmt(x * 9 / 5 + 32), fmt(x))); return
+        if a in ("f", "°f") and b in ("c", "°c"):
+            print("%s °C\t%s °F" % (fmt((x - 32) * 5 / 9), fmt(x))); return
+        ua, ub = UNITS.get(a), UNITS.get(b)
+        if ua and ub and ua[0] == ub[0]:
+            print("%s %s\t%s %s" % (fmt(x * ua[1] / ub[1]), b, fmt(x), a))
+        return
+    if re.fullmatch(r"[\d\s.,]+", t):            # samotné číslo nie je výpočet
+        return
+    v = safe_eval(t)
+    if v is not None:
+        print("%s\t= %s" % (fmt(v), q.strip()))
+
+
+# ── návrhy vyhľadávača ───────────────────────────────────────────────────────────────────────
+def navrhy(engine, q):
+    if len(q.strip()) < 2:
+        return
+    url = {"duckduckgo": "https://duckduckgo.com/ac/?type=list&q=", "bing": "https://api.bing.com/osjson.aspx?query=",
+           "brave": "https://search.brave.com/api/suggest?q=", "startpage": "https://www.startpage.com/osuggestions?q=",
+           "ecosia": "https://ac.ecosia.org/autocomplete?type=list&q="}.get(engine, "https://suggestqueries.google.com/complete/search?client=firefox&q=")
+    try:
+        req = urllib.request.Request(url + urllib.parse.quote(q), headers={"User-Agent": "Mozilla/5.0 LatteOS"})
+        data = json.loads(urllib.request.urlopen(req, timeout=2).read().decode("utf-8", "replace"))
+        items = data[1] if isinstance(data, list) and len(data) > 1 else data.get("suggestions", [])
+        for s in items[:5]:
+            s = s if isinstance(s, str) else s.get("phrase", "")
+            if s and fold(s) != fold(q):
+                print(s)
+    except Exception:
+        pass
+
+
+# ── Linux príkaz: dopĺňanie a krátky výstup ──────────────────────────────────────────────────
+def dopln(text):
+    parts = text.split(" ")
+    last = parts[-1]
+    if len(parts) == 1:
+        if len(last) < 1:
+            return
+        out = subprocess.run(["bash", "-c", 'compgen -c -- "$1" | sort -u | head -8', "_", last], capture_output=True, text=True).stdout
+    else:
+        out = subprocess.run(["bash", "-c", 'cd "$HOME" && compgen -f -- "$1" | head -8', "_", os.path.expanduser(last)],
+                             capture_output=True, text=True).stdout
+        out = "\n".join(p + ("/" if os.path.isdir(os.path.join(HOME, p)) else "") for p in out.split("\n") if p)
+    prefix = " ".join(parts[:-1])
+    for c in out.split("\n"):
+        if c and c != last:
+            print((prefix + " " if prefix else "") + c)
+
+
+SAFE_CMDS = {"df", "free", "uptime", "uname", "date", "cal", "whoami", "hostname", "id", "lsblk", "ip", "ping", "nproc",
+             "lscpu", "lsusb", "lspci", "sensors", "who", "w", "ls", "pwd", "echo", "du", "which", "whereis", "file",
+             "stat", "wc", "head", "tail", "cat", "dig", "host", "nslookup", "systemctl", "journalctl", "flatpak", "dnf",
+             "rpm", "nmcli", "pactl", "hyprctl", "latte-boot"}
+SAFE_SUB = {"systemctl": {"status", "is-active", "is-enabled", "list-units", "--failed", "list-timers"},
+            "journalctl": None, "flatpak": {"list", "info", "search", "remotes"},
+            "dnf": {"list", "info", "search", "repolist", "history", "check-update"}, "rpm": {"-q", "-qa", "-qi", "-qf", "-ql"},
+            "nmcli": {"device", "connection", "general", "radio", "d", "c", "g", "dev", "con"}, "pactl": {"list", "info", "get-default-sink"},
+            "hyprctl": {"monitors", "clients", "workspaces", "devices", "version", "activewindow"}, "latte-boot": {"status", "compat"}}
+
+
+def vystup(cmd):
+    if re.search(r"[|;&<>`$]", cmd):
+        return 3
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return 3
+    if not argv or argv[0] not in SAFE_CMDS:
+        return 3
+    sub = SAFE_SUB.get(argv[0], "any")
+    if sub is not None and sub != "any" and (len(argv) < 2 or argv[1] not in sub):
+        return 3
+    if argv[0] == "ping" and "-c" not in argv:
+        argv[1:1] = ["-c", "3"]
+    if argv[0] == "journalctl" and not ({"-n", "--lines"} & set(argv)):
+        argv += ["-n", "30", "--no-pager"]
+    try:
+        r = subprocess.run(argv, cwd=HOME, capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(str(e)); return 1
+    lines = (r.stdout + r.stderr).rstrip("\n").split("\n")
+    for line in lines[:40]:
+        print(line[:160])
+    if len(lines) > 40:
+        print("… (%d riadkov ďalej — Otvoriť v termináli)" % (len(lines) - 40))
+    return 0
+
+
+# ── časté aplikácie podľa dennej doby ────────────────────────────────────────────────────────
+USE = os.path.join(STATE, "spustac-pouzitie.json")
+
+
+def zaznam(did):
+    try:
+        d = json.load(open(USE))
+    except (OSError, ValueError):
+        d = []
+    t = time.localtime()
+    d.append([did, t.tm_hour, t.tm_wday, int(time.time())])
+    d = d[-2000:]
+    os.makedirs(STATE, exist_ok=True)
+    json.dump(d, open(USE, "w"))
+
+
+def caste(n):
+    try:
+        d = json.load(open(USE))
+    except (OSError, ValueError):
+        return
+    t, now = time.localtime(), time.time()
+    score = {}
+    for did, hour, wday, ts in d:
+        dh = min(abs(hour - t.tm_hour), 24 - abs(hour - t.tm_hour))
+        w = (1.0 if dh <= 1 else 0.5 if dh <= 3 else 0.15) * (1.3 if (wday >= 5) == (t.tm_wday >= 5) else 0.8)
+        w *= 0.5 ** ((now - ts) / (21 * 86400))                       # starnutie: polovica za 3 týždne
+        score[did] = score.get(did, 0) + w
+    for did, _ in sorted(score.items(), key=lambda kv: -kv[1])[:n]:
+        print(did)
+
+
+def main(a):
+    if not a:
+        print(__doc__.strip(), file=sys.stderr); return 2
+    c, rest = a[0], a[1:]
+    if c == "akcie" and rest: akcie(rest[0])
+    elif c == "nastavenia": nastavenia(" ".join(rest))
+    elif c == "pocitaj": pocitaj(" ".join(rest))
+    elif c == "navrhy" and rest: navrhy(rest[0], " ".join(rest[1:]))
+    elif c == "dopln": dopln(" ".join(rest))
+    elif c == "vystup": return vystup(" ".join(rest))
+    elif c == "zaznam" and rest: zaznam(rest[0])
+    elif c == "caste": caste(int(rest[0]) if rest else 4)
+    else:
+        print(__doc__.strip(), file=sys.stderr); return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

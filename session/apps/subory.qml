@@ -14,6 +14,7 @@ import "data"
 ShellRoot {
     id: app
     LatteTheme { id: theme }
+    I18n { id: i18n }
 
     readonly property string home: Quickshell.env("HOME") || "/"
     property bool dual: false
@@ -346,11 +347,26 @@ ShellRoot {
         }
         onLoadFailed: { app.openArg(); app.stateLoaded = true; }
     }
-    // latte-app subory <priečinok>: otvorí zadaný priečinok v ľavom paneli (file:// URL alebo cesta)
+    // latte-app subory <priečinok|súbor>: otvorí zadaný priečinok v ľavom paneli (file:// URL alebo cesta);
+    // súbor → jeho priečinok s označeným súborom, archív (Otvoriť pomocou… › Súbory) rovno ako priečinok
     function openArg() {
-        let a = (Quickshell.env("LATTE_APP_ARGS") || "").trim();
+        let a = (Quickshell.env("LATTE_APP_ARGV") || "").split("\n")[0];     // prvý argument celý (cesta s medzerami)
         if (a.startsWith("file://")) a = decodeURIComponent(a.slice(7));
-        if (a !== "") { paneA.go(a); app.activeIndex = 0; }
+        if (a === "") return;
+        app.activeIndex = 0;
+        if (a.indexOf("://") > 0) { paneA.go(a); return; }                  // smb://, sftp://… idú rovno do panela
+        argKind.command = ["test", "-d", a]; argKind.arg = a; argKind.running = true;
+    }
+    Process {
+        id: argKind
+        property string arg
+        onExited: (code) => {
+            const a = argKind.arg;
+            if (code === 0) { paneA.go(a); return; }
+            const dir = a.substring(0, a.lastIndexOf("/")) || "/", name = a.substring(a.lastIndexOf("/") + 1);
+            paneA.selectAfter = name; paneA.go(dir);
+            if (app.archiveRe.test(name)) tcd.open("archiv", [{ path: a, name: name, isDir: false }], dir, dir);
+        }
     }
     function saveState() {
         if (!app.stateLoaded) return;
@@ -429,7 +445,10 @@ ShellRoot {
         { title: "Systém Linux", items: [
             { key: "sys:root", path: "/", glyph: "server", label: "/ koreň", sub: "skutočná štruktúra, nič skryté" },
             { key: "sys:etc", path: "/etc", glyph: "settings", label: "/etc", sub: "nastavenia systému" },
-            { key: "sys:mnt", path: "/run/media/" + (Quickshell.env("USER") || ""), glyph: "usb", label: "Pripojené médiá" }
+            { key: "sys:mnt", path: "/run/media/" + (Quickshell.env("USER") || ""), glyph: "usb", label: "Pripojené médiá" },
+            // telefóny a fotoaparáty (MTP / PTP cez GVFS): pripájajú sa v Správcovi zariadení › Telefóny a fotoaparáty
+            { key: "sys:gvfs", path: (Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/1000") + "/gvfs", glyph: "device-mobile", label: i18n.tr("Phones and cameras"),
+              sub: i18n.tr("opens after connecting in the Device Manager") }
         ] }
     ]
 

@@ -2,6 +2,7 @@
 // Dáta: latte-sysmon hw (bez správcu) + hw-root (dmidecode, SPD, SMART; so sudo, uložené v ~/.cache/latteos/hw-root.json).
 // Takty jadier sa obnovujú zo snímky Monitora (snap.sensors).
 import QtQuick
+import Quickshell.Io
 import "../common"
 
 Item {
@@ -21,7 +22,12 @@ Item {
     signal openDevices()
 
     readonly property var tabs: [["cpu", "Procesor"], ["cache", "Cache"], ["board", "Doska"], ["mem", "Pamäť"], ["spd", "SPD"],
-                                 ["gpu", "Grafika"], ["disk", "Disky"], ["sys", "Systém"]]
+                                 ["gpu", "Grafika"], ["disk", "Disky"], ["sys", "Systém"], ["bench", "Test výkonu"]]
+    // test výkonu (ako Bench v CPU-Z): latte-sysmon bench — 7-Zip MIPS (porovnateľné s 7-cpu.com) alebo náhradný test
+    property var bench: null
+    property bool benchBusy: false
+    Process { id: benchProc; command: ["latte-sysmon", "bench"]
+              stdout: StdioCollector { onStreamFinished: { try { hv.bench = JSON.parse(this.text); } catch (e) {} hv.benchBusy = false; } } }
     function human(b) {
         if (!b) return "";
         const u = ["B", "KB", "MB", "GB", "TB"]; let v = b, i = 0;
@@ -95,11 +101,22 @@ Item {
         case "gpu": {
             const gl = h.gl || {}, out = (h.gpu || []).map(g => [g.name.replace(/\s*\[[0-9a-f]+\]$/, ""),
                 [["Výrobca", g.vendor.replace(/\s*\[[0-9a-f]+\]$/, "")], ["Ovládač", g.driver], ["VRAM", g.vram ? human(g.vram) : "—"],
+                 ["Generácia", g.family ? g.family + (g.year ? " (~" + g.year + ")" : "") : ""], ["Odporúčaný ovládač", g.driverRec || ""],
+                 ["Vulkan (hry, Proton)", g.vulkanOk === "true" ? "áno" : (g.vulkanOk === "false" ? "nie" : "")], ["Najvyšší stupeň LatteOS", g.maxTier || ""],
                  ["PCIe", g.link ? g.link + (g.linkMax ? " (max " + g.linkMax + ")" : "") : ""], ["Slot", g.slot]]]);
             out.push(["OpenGL / Vulkan", [["OpenGL renderer", gl.renderer], ["OpenGL verzia", gl.version], ["GLSL", gl.glsl], ["OpenGL ES", gl.es]]
                 .concat((gl.vulkan || []).map(v => ["Vulkan", v.device + " · API " + v.api + " · " + v.driver]))]);
             out.push(["Vykresľovanie LatteOS", [["Režim", (h.renderer.match(/renderer = "([^"]*)"/) || [, ""])[1]], ["Stupeň", (h.renderer.match(/tier = "([^"]*)"/) || [, ""])[1]]]]);
             return out;
+        }
+        case "bench": {
+            if (!bench) return [["Test výkonu procesora", [["Ako na to", "Klikni Spustiť test (trvá asi minútu, počítač bude chvíľu vyťažený)"],
+                                                           ["Nástroj", "7-Zip benchmark — výsledky v MIPS sa dajú porovnať s tabuľkami na 7-cpu.com; bez 7-Zipu náhradný test"]]]];
+            const n = bench.now, prev = bench.history.slice(0, -1).reverse();
+            return [["Výsledok · " + n.tool, [["Procesor", n.cpu], ["Jedno vlákno", String(n.single)], ["Všetky vlákna (" + n.threads + ")", String(n.multi)],
+                                              ["Škálovanie", (n.multi / Math.max(1, n.single)).toFixed(1).replace(".", ",") + "× z " + n.threads + " vlákien"]]],
+                    ["Predchádzajúce merania", prev.length ? prev.slice(0, 6).map(x => [Qt.formatDateTime(new Date(x.time * 1000), "d. M. yyyy HH:mm"), x.single + " / " + x.multi + "  (" + x.tool + ")"])
+                                                           : [["—", "zatiaľ žiadne"]]]];
         }
         case "disk": return (h.disks || []).map(d => {
             const s = (r.smart || []).find(x => x.name === d.name) || {};
@@ -155,6 +172,41 @@ Item {
             id: hcol
             width: hflick.width - 12; spacing: 12
             Text { visible: !hv.hw; text: "Zisťujem hardvér…"; color: hv.theme.fgDim; font { family: hv.theme.fontUi; pixelSize: 13 } }
+            // test výkonu ako pruhy (CPU-Z Bench): teraz vs. najlepšie z histórie, a história všetkých vlákien
+            Rectangle {
+                visible: hv.tab === "bench" && !!hv.bench
+                width: hcol.width; height: bcol.implicitHeight + 24; radius: 12; color: hv.theme.field
+                readonly property var hist: hv.bench ? hv.bench.history.filter(x => x.tool === hv.bench.now.tool) : []
+                readonly property real maxS: Math.max(1, ...hist.map(x => x.single))
+                readonly property real maxM: Math.max(1, ...hist.map(x => x.multi))
+                Column {
+                    id: bcol; x: 14; y: 12; width: parent.width - 28; spacing: 8
+                    Text { text: "VÝSLEDOK · " + (hv.bench ? hv.bench.now.tool.toUpperCase() : ""); color: hv.theme.fgDim; font { family: hv.theme.fontUi; pixelSize: 10; weight: Font.Bold; letterSpacing: 0.6 } }
+                    Repeater {
+                        model: hv.bench ? [["Jedno vlákno", hv.bench.now.single, parent.parent.maxS], ["Všetky vlákna", hv.bench.now.multi, parent.parent.maxM]] : []
+                        Row {
+                            required property var modelData
+                            spacing: 10
+                            Text { width: 110; text: modelData[0]; color: hv.theme.fg; anchors.verticalCenter: parent.verticalCenter; font { family: hv.theme.fontUi; pixelSize: 12; weight: Font.Bold } }
+                            Rectangle { width: bcol.width - 220; height: 18; radius: 9; anchors.verticalCenter: parent.verticalCenter; color: Qt.rgba(0, 0, 0, 0.2)
+                                        Rectangle { width: parent.width * Math.min(1, modelData[1] / modelData[2]); height: parent.height; radius: 9; color: hv.theme.primary } }
+                            Text { width: 90; text: String(modelData[1]); color: hv.theme.fg; anchors.verticalCenter: parent.verticalCenter; font { family: hv.theme.fontMono; pixelSize: 13; weight: Font.Bold } }
+                        }
+                    }
+                    Text { visible: parent.parent.hist.length > 1; topPadding: 6; text: "HISTÓRIA · VŠETKY VLÁKNA"; color: hv.theme.fgDim; font { family: hv.theme.fontUi; pixelSize: 10; weight: Font.Bold; letterSpacing: 0.6 } }
+                    Row {
+                        visible: parent.parent.hist.length > 1; height: 70; spacing: 6
+                        Repeater {
+                            model: parent.parent.parent.hist.slice(-12)
+                            Rectangle {
+                                required property var modelData
+                                width: 26; anchors.bottom: parent.bottom; radius: 5; color: hv.theme.primary; opacity: 0.55 + 0.45 * (modelData.time === hv.bench.now.time ? 1 : 0)
+                                height: Math.max(4, 70 * modelData.multi / bcol.parent.maxM)
+                            }
+                        }
+                    }
+                }
+            }
             // takty a záťaž jadier (ako HWiNFO Core0…)
             Rectangle {
                 visible: hv.tab === "cpu" && hv.liveClocks.length > 0
@@ -242,6 +294,8 @@ Item {
             Text { id: bl; anchors.centerIn: parent; text: btn.label; color: btn.primary ? hv.theme.fgOnPrimary : hv.theme.fg; font { family: hv.theme.fontUi; pixelSize: 12; weight: Font.Bold } }
             MouseArea { id: bm; anchors.fill: parent; hoverEnabled: true; onClicked: btn.clicked() }
         }
+        Btn { visible: hv.tab === "bench"; primary: true; label: hv.benchBusy ? "Meriam… (asi minúta)" : "Spustiť test"
+              onClicked: if (!hv.benchBusy) { hv.benchBusy = true; benchProc.running = true; } }
         Btn { label: "Obnoviť"; onClicked: hv.refresh() }
         Btn { visible: !pwBox.visible; label: hv.rootBusy ? "Načítavam…" : (hv.root ? "Podrobnosti so správcom ↻" : "Podrobnosti so správcom"); primary: !hv.root
               onClicked: { if (!hv.rootBusy) { pwBox.visible = true; pw.forceActiveFocus(); } } }

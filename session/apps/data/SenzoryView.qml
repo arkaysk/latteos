@@ -38,6 +38,11 @@ Item {
     }
     function rename(id, name) { const p = JSON.parse(JSON.stringify(prefs)); if (name) p.names[id] = name; else delete p.names[id]; savePrefs(p); }
     function label(it) { return prefs.names[it.id] || it.label; }
+    function setAlert(id, t) {
+        const p = JSON.parse(JSON.stringify(prefs)); p.alerts = p.alerts || {};
+        if (t === "" || isNaN(parseFloat(t))) delete p.alerts[id]; else p.alerts[id] = parseFloat(t);
+        savePrefs(p); status(t === "" ? "Upozornenie zrušené" : "Upozorním nad " + t);
+    }
     function fmt(v, unit) {
         if (v === undefined || v === null || isNaN(v)) return "—";
         const d = unit === "V" ? 3 : (Math.abs(v) >= 100 || unit === "MHz" || unit === "MB" || unit === "ot/min" ? 0 : 1);
@@ -88,7 +93,13 @@ Item {
             { glyph: "pencil", label: "Premenovať…", action: () => Qt.callLater(() => openMenu([{ input: label(it), label: "Nový názov (prázdne = pôvodný)", action: (t) => rename(it.id, t.trim()) }], x, y, it.label)) },
             { glyph: p.hidden.indexOf(it.id) >= 0 ? "eye" : "eye-off", label: p.hidden.indexOf(it.id) >= 0 ? "Zobraziť" : "Skryť", action: () => toggleIn("hidden", it.id) },
             { glyph: "clipboard", label: "Kopírovať hodnotu", action: () => { copier.command = ["wl-copy", "--", label(it) + ": " + fmt(it.value, it.unit)]; copier.running = true; } },
-            { glyph: "refresh", label: "Vynulovať min/max", action: () => { const st = stats; delete st[it.id]; stats = st; } }
+            { glyph: "refresh", label: "Vynulovať min/max", action: () => { const st = stats; delete st[it.id]; stats = st; } },
+            { separator: true },
+            // upozornenie pri prekročení hranice (oznámenie, najviac raz za 10 min; kým beží Monitor)
+            { glyph: "alert-triangle", label: (p.alerts || {})[it.id] !== undefined ? "Upozornenie nad " + p.alerts[it.id] + " " + (it.unit || "") + " · zmeniť…" : "Upozorniť nad hodnotou…",
+              action: () => Qt.callLater(() => openMenu([{ input: String((p.alerts || {})[it.id] !== undefined ? p.alerts[it.id] : Math.ceil((it.value || 0) * 1.2)),
+                                                          label: "Hranica v " + (it.unit || "jednotkách") + " (prázdne = bez upozornenia)",
+                                                          action: (t) => setAlert(it.id, t.trim().replace(",", ".")) }], x, y, label(it))) }
         ], x, y, g.name + " · " + label(it));
     }
     Process { id: copier }

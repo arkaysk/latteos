@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# latte-serpantinum — Serpantinum (github.com/ilyamiro/serpantinum) na Hyprlande ako samostatné prostredie na pokusy,
+# oddelené od LatteOS: program v ~/.local/share/serpantinum, jeho Hyprland v ~/.config/serpantinum-hypr
+# (nie ~/.config/hypr). Inštalácia: setup/lab/serpantinum.sh.
+S="$HOME/.local/share/serpantinum"
+H="$HOME/.config/serpantinum-hypr"
+[ -x "$S/bin/serpantinumd" ] && [ -f "$H/hyprland.lua" ] || { echo "latte-serpantinum: nie je nainštalovaný (setup/lab/serpantinum.sh)" >&2; exit 1; }
+export PATH="$S/bin:$PATH"
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=Hyprland
+# systemd používateľa žije od štartu PC (Sunshine pred prihlásením): premenné cudzej relácie preč
+systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP 2>/dev/null
+exec Hyprland -c "$H/hyprland.lua"

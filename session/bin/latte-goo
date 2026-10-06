@@ -1,0 +1,853 @@
+#!/usr/bin/python3
+"""latte-goo — pomocník enginu Goo (session/goo): kvapky používateľa, ich akcie, uložené polohy, ikony.
+Logika scény beží v pieskovisku pleamar (bez súborov a bez sh) — všetko, čo siaha na systém, robí tento pomocník.
+
+  latte-goo zoznam [--priklady]   kvapky používateľa (~/.config/latteos/goo/kvapky/*.json) overené, ako JSON zoznam;
+                                  chybná kvapka má pole "chyba" (logika ju preskočí a zapíše do logu)
+  latte-goo novy MENO             nová kvapka zo vzoru (súbor JSON), vypíše cestu — upraviť a uložiť, ukáže sa sama
+  latte-goo skontroluj            overí všetky kvapky používateľa, ľudsky čitateľne
+  latte-goo akcia ID KLUC         vykoná akciu kvapky (klik, pravy, stredny, podrz, hore, dole) podľa jej súboru
+  latte-goo text ID               text kvapky z príkazu (prvý riadok, do 5 s)
+  latte-goo upozornenie ID        farba jadra z príkazu upozornenia (hardver|siet|softver|vystraha|svetlo|ine), prázdne = nič
+  latte-goo stav                  uložené polohy a veľkosti ({id: {x, y, z}})
+  latte-goo uloz-stav JSON        uloží ich (atomicky)
+  latte-goo obloha                slnko a mesiac na oblohe, dážď / sneh, vietor a počasie teraz (miesto z greeter.conf)
+  latte-goo prihlasenie           údaje scény prihlásenia (login.plm): meno, káva, posledný pád / novinky, info, ikony
+  latte-goo goopower-miesto ÚČET  kde má GooPower daný účet (podiel šírky; pre prihlásenie iným menom)
+  latte-goo login-skuska [SEK]    scéna prihlásenia na skúšku nad plochou (heslo „latte“, sama skončí; nič nemení)
+  latte-goo nastavenia            Nastavenia › Kvapky (~/.config/latteos/kvapky.json): skryté, veľkosť, vrátenie
+  latte-goo cas                   údaje karty ClockGoo: {"teraz" ms, "casovace" (stopky, minútka, budíky — spoločné
+                                  s plochou Kvapky, ~/.local/share/latteos/casovace.json), "pohoda" (čas pred obrazovkou
+                                  a tri najpoužívanejšie aplikácie dnes), "pasma" (svetové hodiny z clock.conf)}
+  latte-goo zvon TITUL [TEXT]     minútka alebo budík: upozornenie a trikrát zvuk (logika zvoniť nevie)
+  latte-goo spustac               nastavenie spúšťača spoločné s plochou Kvapky (~/.config/latteos/spustac.json):
+                                  režim, obľúbené záložky, nedávne, história príkazov, vyhľadávač
+  latte-goo spustac-uloz KĽÚČ JSON  zmení v ňom jeden kľúč (mode, recent, cmds), ostatné nechá
+  latte-goo kalendar              {"udalosti": [{date, time, title}], "ulohy": [{title, done, date}]} — spoločné
+                                  s plochou Kvapky (events.json, todo.json; zápis `latte-kvapky uloz udalosti|ulohy`)
+  latte-goo pocasie               predpoveď Open-Meteo pre miesto z Nastavení › Účet › Prihlasovanie (greeter.conf):
+                                  {"miesto", "teraz": {t, kod}, "hodiny": [{hm, t, kod}], "dni": [{den 0…6 (0 = pondelok),
+                                  max, min, kod, zrazky %}]}; v pamäti 20 minút
+  latte-goo ikony MENO…           mená ikon Tabler → znaky písma ({meno: znak}), podľa Noctalie
+  latte-goo ucet                  prihlásený účet pre kartu GooPower: {"meno", "login", "pocitac", "obrazok" (portrét:
+                                  ~/.face, obrázok prihlasovania LatteOS alebo AccountsService), "od" (prihlásený od HH:MM)}
+  latte-goo profil                profil napájania (powerprofilesctl / tuned-ppd): {"aktivny", "dostupne": [...]},
+                                  {} keď ho systém nemá
+  latte-goo profil-nastav MENO    power-saver | balanced | performance
+  latte-goo pas [on|off]          pás výkonu GooPower zapnutý pri prihlásení (bez argumentu vypíše on/off)
+  latte-goo kava                  pomer vody a mlieka podľa Baristu (~/.config/latteos/kava): [voda, mlieko]
+  latte-goo rezim                 režim okien (plavajuce | dlazdice | paska) z ~/.local/state/latteos/window-mode
+  latte-goo okna                  viditeľné okná na aktuálnej ploche zameraného monitora (obdĺžniky voči monitoru):
+                                  {"w", "h", "okna": [{x, y, w, h}], "roh": rohová lišta Noctalie} — Goobar podľa
+                                  nich uhýba k okraju a kvapky sa zastavia pred rohovou lištou (Hyprland,
+                                  inak Sway na skúšky)
+"""
+import glob, json, os, re, subprocess, sys
+
+HOME = os.path.expanduser("~")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "latteos", "goo", "kvapky")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "latteos", "goo", "stav.json")
+# inštancia enginu na vedľajšom monitore (iba GooBar) má vlastné uložené miesta: stav-<monitor>.json
+VEDLAJSI = re.sub(r"[^A-Za-z0-9_.-]", "", os.environ.get("LATTE_GOO_STAV", ""))
+if VEDLAJSI:
+    STATE = STATE[:-5] + "-" + VEDLAJSI + ".json"
+here = os.path.dirname(os.path.realpath(__file__))
+SHARE = os.environ.get("LATTE_GOO_DIR") or next(
+    (d for d in ("/usr/share/latteos/goo", os.path.join(here, "..", "goo")) if os.path.isdir(d)), "/usr/share/latteos/goo")
+PRIKLADY = os.path.join(SHARE, "priklady")
+TABLER = "/usr/share/noctalia/assets/fonts/tabler.json"
+KAVA = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "latteos", "kava")
+# rovnaké ako plocha Kvapky (kvapka.luau › kavy)
+KAVY = {"espresso": (0, 0), "ristretto": (0, 0), "lungo": (0.35, 0), "americano": (0.7, 0), "macchiato": (0, 0.25),
+        "cortado": (0, 0.4), "flatwhite": (0.05, 0.5), "cappuccino": (0, 0.55), "latte": (0, 0.85),
+        "cierna-s-mliekom": (0.4, 0.3)}
+
+POVAHY = {"pokojna", "zvedava", "lepkava", "tazka", "hrava"}
+EFEKTY = {"nic", "dych", "kmit", "tras", "obeh", "tlkot"}
+DRUHY = {"ikona", "ukazovatel"}
+AKCIE = {"klik", "pravy", "stredny", "podrz", "koliesko", "hore", "dole"}
+VSTAVANE = {"domov", "velkost", "poskoc", "vlnka", "vibracia", "nic"}
+JADRA = {"hardver", "siet", "softver", "vystraha", "svetlo", "ine"}
+DRUHY_AKCII = ("spusti", "aplikacia", "otvor", "vystup")
+# čísla: (min, max)
+CISLA = {"velkost": (8, 80), "gravitacia": (0, 1), "vznos": (0, 2), "vyska": (0, 300), "odstup": (-2000, 2000), "dosah": (40, 800), "lepivost": (0, 1), "trhanie": (20, 400),
+         "svetlo": (0, 1), "rast": (0, 1), "hmotnost": (0, 1), "sila": (0, 2), "hodnota": (0, 1)}
+TEXTY = ("nazov", "ikona", "popis", "pri")
+
+VZOR = {
+    "id": "", "nazov": "", "ikona": "droplet", "popis": "Moja kvapka",
+    "povaha": "zvedava", "velkost": 26,
+    "text": {"prikaz": "date +%H:%M", "kazdych": 30},
+    "akcie": {"klik": {"spusti": "notify-send Kvapka Ahoj"}, "pravy": {"vystup": "uptime -p"},
+              "stredny": "domov", "koliesko": "velkost"},
+}
+
+
+def slug(s):
+    s = s.lower()
+    for a, b in zip("áäčďéěíĺľňóôŕřšťúůýž", "aacdeeillnoorrstuuyz"):
+        s = s.replace(a, b)
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:40]
+
+
+def check_action(name, a):
+    if isinstance(a, str):
+        return None if a in VSTAVANE else f"akcia {name}: nepoznám '{a}' (vstavané: {', '.join(sorted(VSTAVANE))})"
+    if not isinstance(a, dict) or len([k for k in DRUHY_AKCII if k in a]) != 1:
+        return f"akcia {name}: čakám jedno z {', '.join(DRUHY_AKCII)}, alebo {', '.join(sorted(VSTAVANE))}"
+    k = next(k for k in DRUHY_AKCII if k in a)
+    return None if isinstance(a[k], str) and a[k].strip() else f"akcia {name}: '{k}' má byť neprázdny text"
+
+
+def validate(j, path):
+    """overená a očistená kvapka; chyba → {"id", "zdroj", "chyba"}"""
+    def bad(msg):
+        return {"id": j.get("id") if isinstance(j.get("id"), str) else slug(os.path.basename(path)[:-5]), "zdroj": path, "chyba": msg}
+    if not isinstance(j, dict):
+        return {"id": slug(os.path.basename(path)[:-5]), "zdroj": path, "chyba": "súbor nie je objekt JSON"}
+    out = {"zdroj": path}
+    out["id"] = slug(j.get("id") or os.path.basename(path)[:-5])
+    if not out["id"]:
+        return bad("chýba id")
+    for k in TEXTY:
+        if k in j:
+            if not isinstance(j[k], str):
+                return bad(f"'{k}' má byť text")
+            out[k] = j[k][:80]
+    out.setdefault("nazov", j.get("id") or out["id"])
+    for k, (lo, hi) in CISLA.items():
+        if k in j:
+            if not isinstance(j[k], (int, float)) or isinstance(j[k], bool):
+                return bad(f"'{k}' má byť číslo ({lo} až {hi})")
+            out[k] = max(lo, min(hi, j[k]))
+    for k, allowed in (("povaha", POVAHY), ("efekt", EFEKTY), ("druh", DRUHY)):
+        if k in j:
+            if j[k] not in allowed:
+                return bad(f"'{k}' môže byť: {', '.join(sorted(allowed))}")
+            out[k] = j[k]
+    if "farba" in j:
+        return bad("'farba' nie je: kvapky sú vždy káva (Barista: pomer vody a mlieka)")
+    if "tahat" in j:
+        out["tahat"] = bool(j["tahat"])
+    if "poloha" in j:
+        p = j["poloha"]
+        if not (isinstance(p, dict) and isinstance(p.get("x", 0.5), (int, float)) and isinstance(p.get("y", 0), (int, float))):
+            return bad("'poloha' má byť {\"x\": 0…1, \"y\": px nad lištou}")
+        out["poloha"] = {"x": max(0.02, min(0.98, p.get("x", 0.5))), "y": max(0, p.get("y", 0))}
+    t = j.get("text")
+    if isinstance(t, str):
+        out["text"] = t[:12]
+    elif isinstance(t, dict):
+        if not isinstance(t.get("prikaz"), str):
+            return bad("'text' má byť text, alebo {\"prikaz\": \"…\", \"kazdych\": sekundy}")
+        out["text"] = {"prikaz": t["prikaz"], "kazdych": max(2, int(t.get("kazdych", 60)))}
+    if "jadro" in j:
+        if j["jadro"] not in JADRA:
+            return bad(f"'jadro' môže byť: {', '.join(sorted(JADRA))}")
+        out["jadro"] = j["jadro"]
+    if "upozornenie" in j:
+        u = j["upozornenie"]
+        if not (isinstance(u, dict) and isinstance(u.get("prikaz"), str)):
+            return bad("'upozornenie' má byť {\"prikaz\": \"…\", \"kazdych\": sekundy}; výstup príkazu = farba jadra")
+        out["upozornenie"] = {"prikaz": u["prikaz"], "kazdych": max(2, int(u.get("kazdych", 30)))}
+    if "akcie" in j:
+        if not isinstance(j["akcie"], dict):
+            return bad("'akcie' má byť objekt")
+        acts = {}
+        for name, a in j["akcie"].items():
+            if name not in AKCIE:
+                return bad(f"neznáma akcia '{name}' (môže byť: {', '.join(sorted(AKCIE))})")
+            if name == "koliesko" and isinstance(a, dict) and ("hore" in a or "dole" in a):
+                for sub in ("hore", "dole"):
+                    if sub in a:
+                        e = check_action(sub, a[sub])
+                        if e:
+                            return bad(e)
+                        acts[sub] = a[sub]
+                acts["koliesko"] = {"hore": a.get("hore", "nic"), "dole": a.get("dole", "nic")}
+                continue
+            e = check_action(name, a)
+            if e:
+                return bad(e)
+            acts[name] = a
+        out["akcie"] = acts
+    return out
+
+
+def files(priklady=False):
+    fs = sorted(glob.glob(os.path.join(CONF, "*.json")))
+    if priklady:
+        own = {os.path.basename(f) for f in fs}
+        fs += [f for f in sorted(glob.glob(os.path.join(PRIKLADY, "*.json"))) if os.path.basename(f) not in own]
+    return fs
+
+
+def load_all(priklady=False):
+    res = []
+    for f in files(priklady):
+        try:
+            j = json.load(open(f, encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            res.append({"id": slug(os.path.basename(f)[:-5]), "zdroj": f, "chyba": f"neplatný JSON: {e}"})
+            continue
+        res.append(validate(j, f))
+    return res
+
+
+def find(i):
+    for d in load_all(priklady=True):
+        if d["id"] == i and "chyba" not in d:
+            return d
+    return None
+
+
+def run_action(a):
+    if isinstance(a, str):
+        return 0
+    if "spusti" in a:
+        subprocess.Popen(["sh", "-c", a["spusti"]], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif "aplikacia" in a:
+        app = a["aplikacia"][:-8] if a["aplikacia"].endswith(".desktop") else a["aplikacia"]
+        subprocess.Popen(["gtk-launch", app], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif "otvor" in a:
+        subprocess.Popen(["xdg-open", os.path.expanduser(a["otvor"])], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif "vystup" in a:
+        try:
+            out = subprocess.run(["sh", "-c", a["vystup"]], capture_output=True, text=True, timeout=5).stdout
+        except subprocess.TimeoutExpired:
+            out = "(príkaz nestihol odpovedať do 5 s)"
+        print(out.strip()[:300])
+    return 0
+
+
+def glyphs(names):
+    try:
+        tab = json.load(open(TABLER))
+    except (OSError, ValueError):
+        return {}
+    res = {}
+    for n in names:
+        e = tab.get(n) or tab.get("tabler-" + n)
+        cp = str(e.get("codepoint", "")) if isinstance(e, dict) else ""
+        if cp[:2] in ("U+", "0x"):                    # tabler.json Noctalie píše „U+EA35“
+            res[n] = chr(int(cp[2:], 16))
+    return res
+
+
+def cas():
+    """údaje karty ClockGoo — to isté, čo číta časové menu plochy Kvapky (kvapka.luau › paint_static)"""
+    import datetime, time
+    share = os.environ.get("XDG_DATA_HOME", HOME + "/.local/share")
+    cfg = os.environ.get("XDG_CONFIG_HOME", HOME + "/.config")
+    def load(path, default):
+        try:
+            v = json.load(open(path))
+            return v if isinstance(v, type(default)) else default
+        except (OSError, ValueError):
+            return default
+    out = {"teraz": int(time.time() * 1000), "casovace": load(share + "/latteos/casovace.json", {}),
+           "pohoda": {"spolu": 0, "aplikacie": []}, "pasma": []}
+    d = load(share + "/latteos/pohoda/" + datetime.date.today().isoformat() + ".json", {})
+    if isinstance(d.get("apps"), dict):
+        out["pohoda"]["spolu"] = int(sum((seg[1] or 0) - (seg[0] or 0) for seg in d.get("screen") or [] if len(seg) >= 2))
+        apps = sorted(((c, int((v or {}).get("s", 0))) for c, v in d["apps"].items()), key=lambda x: -x[1])[:3]
+        for cls, sec in apps:
+            name = cls[6:] if cls.startswith("latte:") else cls.rsplit(".", 1)[-1]
+            out["pohoda"]["aplikacie"].append({"nazov": name[:1].upper() + name[1:], "s": sec})
+    try:
+        zones = re.search(r'zones = "([^"]*)"', open(cfg + "/latteos/clock.conf").read())
+    except OSError:
+        zones = None
+    if zones:
+        import zoneinfo
+        now = datetime.datetime.now().astimezone()
+        for z in [x for x in re.split(r"[,\s]+", zones.group(1)) if x][:4]:
+            try:
+                t = now.astimezone(zoneinfo.ZoneInfo(z))
+            except Exception:
+                continue
+            diff = (t.utcoffset() - now.utcoffset()).total_seconds() / 3600
+            ds = "" if diff == 0 else ("+" if diff > 0 else "−") + ("%g" % abs(diff)).replace(".", ",") + " h"
+            out["pasma"].append({"mesto": z.rsplit("/", 1)[-1].replace("_", " "), "hm": t.strftime("%H:%M"), "rozdiel": ds})
+    return out
+
+
+def kalendar():
+    share = os.environ.get("XDG_DATA_HOME", HOME + "/.local/share")
+    def load(name):
+        try:
+            v = json.load(open(share + "/latteos/" + name))
+            return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+        except (OSError, ValueError):
+            return []
+    return {"udalosti": load("events.json"), "ulohy": load("todo.json")}
+
+
+def pocasie():
+    """predpoveď ako v ploche Kvapky (kvapka.luau › weather): Open-Meteo bez kľúča, miesto z greeter.conf"""
+    import datetime, time, urllib.request
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "goo-pocasie.json")
+    try:
+        if time.time() - os.path.getmtime(cache) < 20 * 60:
+            return json.load(open(cache))
+    except (OSError, ValueError):
+        pass
+    try:
+        conf = open("/var/lib/latteos/greeter/greeter.conf").read()
+    except OSError:
+        conf = ""
+    def key(k, d):
+        m = re.search(k + r'\s*=\s*"([^"]*)"', conf)
+        return m.group(1) if m and m.group(1) else d
+    lat, lon, place = key("lat", "48.74"), key("lon", "19.15"), key("place", "")
+    url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&current=temperature_2m,weather_code,wind_speed_10m"
+           "&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+           "precipitation_probability_max&timezone=auto&forecast_days=8" % (lat, lon))
+    try:
+        d = json.load(urllib.request.urlopen(url, timeout=8))
+    except Exception:
+        try:
+            return json.load(open(cache))                 # bez siete: posledná známa
+        except (OSError, ValueError):
+            return {}
+    cur, hr, dl = d.get("current") or {}, d.get("hourly") or {}, d.get("daily") or {}
+    out = {"miesto": place.split(",")[0], "teraz": {"t": round(cur.get("temperature_2m") or 0), "kod": cur.get("weather_code", 3),
+                                                             "vietor": round(cur.get("wind_speed_10m") or 0)},
+           "hodiny": [], "dni": []}
+    now = (cur.get("time") or "")[:13]
+    times = hr.get("time") or []
+    start = next((i for i, t in enumerate(times) if t[:13] == now), 0) + 1
+    for i in range(start, min(start + 24, len(times)), 3):
+        out["hodiny"].append({"hm": times[i][11:16], "t": round(hr["temperature_2m"][i]), "kod": hr["weather_code"][i]})
+    for i, day in enumerate(dl.get("time") or []):
+        out["dni"].append({"den": datetime.date.fromisoformat(day).weekday(), "max": round(dl["temperature_2m_max"][i]),
+                           "min": round(dl["temperature_2m_min"][i]), "kod": dl["weather_code"][i],
+                           "zrazky": (dl.get("precipitation_probability_max") or [None] * 9)[i] or 0})
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        json.dump(out, open(cache + ".new", "w"), ensure_ascii=False)
+        os.replace(cache + ".new", cache)
+    except OSError:
+        pass
+    return out
+
+
+def zvon(title, body):
+    """upozornenie hneď, zvuk trikrát na pozadí (ako ring() v kvapka.luau)"""
+    subprocess.Popen(["notify-send", "-a", "LatteOS", "-i", "alarm-clock", title, body],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    snd = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+    if os.path.exists(snd):
+        subprocess.Popen(["sh", "-c", 'for i in 1 2 3; do paplay "$0" || break; done', snd], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def visible_windows():
+    """okná, ktoré na ploche naozaj vidno (nie minimalizované v special:minimized), v súradniciach monitora"""
+    def cmd(*c):
+        try:
+            return json.loads(subprocess.run(c, capture_output=True, text=True, timeout=2).stdout or "null")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+    mons = cmd("hyprctl", "-j", "monitors")
+    if isinstance(mons, list) and mons:
+        # monitor, na ktorom engine beží (hlavný, ľavý horný roh 0,0 — ako latte-kvapky), nie práve zameraný
+        m = next((x for x in mons if x.get("x") == 0 and x.get("y") == 0), mons[0])
+        meno = os.environ.get("LATTE_GOO_MONITOR", "")              # inštancia enginu na inom monitore (GooBar)
+        m = next((x for x in mons if meno and x.get("name") == meno), m)
+        ws = (m.get("activeWorkspace") or {}).get("id")
+        out = []
+        for c in cmd("hyprctl", "-j", "clients") or []:
+            w = c.get("workspace") or {}
+            if not c.get("mapped", True) or c.get("hidden") or w.get("id") != ws or str(w.get("name", "")).startswith("special"):
+                continue
+            (x, y), (cw, ch) = c.get("at", [0, 0]), c.get("size", [0, 0])
+            out.append({"x": x - m["x"], "y": y - m["y"], "w": cw, "h": ch})
+        scale = m.get("scale", 1) or 1
+        # rohová lišta Noctalie na tomto monitore: kvapky sa pred ňou zastavia
+        roh = None
+        for lv in ((cmd("hyprctl", "-j", "layers") or {}).get(m.get("name"), {}).get("levels") or {}).values():
+            for l in lv:
+                if "noctalia-bar" in l.get("namespace", "") and l.get("w", 0) > 0 and l.get("h", 0) > 0:
+                    roh = {"x": l["x"] - m["x"], "y": l["y"] - m["y"], "w": l["w"], "h": l["h"]}
+        return {"w": int(m["width"] / scale), "h": int(m["height"] / scale), "okna": out, "roh": roh}
+    tree = cmd("swaymsg", "-t", "get_tree")
+    if isinstance(tree, dict):
+        out, mon = [], {"w": 1920, "h": 1080}
+        def walk(n, visible):
+            if n.get("type") == "output" and n.get("name") != "__i3":
+                mon.update(w=n["rect"]["width"], h=n["rect"]["height"])
+            if n.get("type") == "workspace":
+                visible = n.get("visible", False) if "visible" in n else True
+            if (n.get("app_id") is not None or n.get("window")) and visible and n.get("visible", True):
+                r = n["rect"]
+                out.append({"x": r["x"], "y": r["y"], "w": r["width"], "h": r["height"]})
+            for k in n.get("nodes", []) + n.get("floating_nodes", []):
+                walk(k, visible)
+        walk(tree, True)
+        return {"w": mon["w"], "h": mon["h"], "okna": out}
+    return {"w": 0, "h": 0, "okna": []}
+
+
+def ucet():
+    """prihlásený účet: meno (GECOS), login, počítač, portrét a odkedy je prihlásený"""
+    import pwd, socket
+    login = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    try:
+        meno = pwd.getpwnam(login).pw_gecos.split(",")[0].strip()
+    except KeyError:
+        meno = ""
+    obr = next((p for p in (os.path.join(HOME, ".face"), "/var/lib/latteos/greeter/avatars/%s.png" % login,
+                            "/var/lib/AccountsService/icons/" + login) if os.path.isfile(p) and os.path.getsize(p) > 0), "")
+    od = ""
+    try:                                                 # začiatok relácie: systemd-logind
+        sid = os.environ.get("XDG_SESSION_ID", "")
+        if sid:
+            t = subprocess.run(["loginctl", "show-session", sid, "-p", "Timestamp", "--value"], capture_output=True, text=True, timeout=2).stdout
+            m = re.search(r"(\d{1,2}:\d{2}):\d{2}", t)
+            od = m.group(1) if m else ""
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {"meno": meno or login, "login": login, "pocitac": socket.gethostname().split(".")[0], "obrazok": obr, "od": od}
+
+
+def profil(nastav=None):
+    """profil napájania cez powerprofilesctl (power-profiles-daemon alebo tuned-ppd na Fedore)"""
+    try:
+        if nastav:
+            subprocess.run(["powerprofilesctl", "set", nastav], capture_output=True, timeout=5)
+        akt = subprocess.run(["powerprofilesctl", "get"], capture_output=True, text=True, timeout=3).stdout.strip()
+        zoz = subprocess.run(["powerprofilesctl", "list"], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    dost = [m.group(1) for m in re.finditer(r"^\s*\*?\s*([a-z-]+):\s*$", zoz, re.M)]
+    return {"aktivny": akt, "dostupne": dost} if akt else {}
+
+
+GREETER = "/var/lib/latteos/greeter"
+
+
+def nebo(lat, lon, t=None):
+    """kde je na oblohe slnko a mesiac (výška v stupňoch, t = podiel cesty od východu 0 po západ 1, mimo nej −1)
+    a fáza mesiaca (osvetlená časť 0…1, či dorastá). Nízka presnosť (~1°) — stačí na siluetu pri prihlásení."""
+    import math, time
+    t = time.time() if t is None else t
+    d = t / 86400.0 + 2440587.5 - 2451545.0              # dni od J2000
+    rad, sin, cos = math.radians, math.sin, math.cos
+    g = rad((357.529 + 0.98560028 * d) % 360)
+    L = rad((280.459 + 0.98564736 * d + 1.915 * sin(g) + 0.020 * sin(2 * g)) % 360)   # ekliptikálna dĺžka slnka
+    e = rad(23.439 - 0.00000036 * d)
+    ra_s, dec_s = math.atan2(cos(e) * sin(L), cos(L)), math.asin(sin(e) * sin(L))
+    Mm = rad((134.963 + 13.064993 * d) % 360)
+    lam = rad((218.316 + 13.176396 * d) % 360) + rad(6.289) * sin(Mm)                # mesiac
+    bet = rad(5.128) * sin(rad((93.272 + 13.229350 * d) % 360))
+    ra_m = math.atan2(sin(lam) * cos(e) - math.tan(bet) * sin(e), cos(lam))
+    dec_m = math.asin(sin(bet) * cos(e) + cos(bet) * sin(e) * sin(lam))
+    lst = rad((280.46061837 + 360.98564736629 * d + lon) % 360)
+    fi = rad(lat)
+
+    def poloha(ra, dec):
+        h = (lst - ra + math.pi) % (2 * math.pi) - math.pi                           # hodinový uhol
+        vyska = math.degrees(math.asin(sin(fi) * sin(dec) + cos(fi) * cos(dec) * cos(h)))
+        c = max(-1.0, min(1.0, -math.tan(fi) * math.tan(dec)))
+        h0 = math.acos(c)                                                            # polovica denného oblúka
+        return {"vyska": round(vyska, 1), "t": round((h + h0) / (2 * h0), 4) if h0 > 0.01 and abs(h) <= h0 else -1}
+
+    elong = math.acos(max(-1.0, min(1.0, sin(dec_s) * sin(dec_m) + cos(dec_s) * cos(dec_m) * cos(ra_s - ra_m))))
+    mesiac = poloha(ra_m, dec_m)
+    mesiac.update(faza=round((1 - cos(elong)) / 2, 3), dorasta=sin(lam - L) > 0)
+    return {"slnko": poloha(ra_s, dec_s), "mesiac": mesiac}
+
+
+def greeter_conf():
+    conf = {}
+    try:
+        for line in open(os.path.join(GREETER, "greeter.conf"), encoding="utf-8"):
+            m = re.match(r'\s*(\w+)\s*=\s*"?(.*?)"?\s*$', line)
+            if m and not line.lstrip().startswith("#"):
+                conf[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return conf
+
+
+def obloha(conf=None):
+    """obloha a počasie v mieste z greeter.conf — pre prihlásenie aj pre hladinu na ploche: kde je slnko a mesiac
+    (nebo), či padá dážď alebo sneh (zrazky: 0 nič, 1 v predpovedi na najbližšie hodiny, 2 práve teraz), vietor
+    v km/h a počasie teraz (teplota, trieda, znak, miesto a dnešný rozsah)"""
+    conf = greeter_conf() if conf is None else conf
+    try:
+        nb = nebo(float(conf.get("lat", "48.74")), float(conf.get("lon", "19.15")))
+    except ValueError:
+        nb = {}
+    DAZD = set(range(51, 68)) | {80, 81, 82, 95, 96, 99}
+    SNEH = {71, 73, 75, 77, 85, 86}
+    zrazky, sneh, teraz_w, vietor = 0, False, None, 0
+    try:
+        w = pocasie()
+        teraz = (w.get("teraz") or {}).get("kod")
+        vietor = round(float((w.get("teraz") or {}).get("vietor") or 0))
+        skoro = [h.get("kod") for h in (w.get("hodiny") or [])[:2]]
+        if teraz in DAZD or teraz in SNEH:
+            zrazky, sneh = 2, teraz in SNEH
+        elif any(k in DAZD or k in SNEH for k in skoro):
+            zrazky, sneh = 1, not any(k in DAZD for k in skoro)
+        if teraz is not None and "t" in (w.get("teraz") or {}):
+            k = int(teraz)                               # trieda pre text scény a znak ako v karte ClockGoo
+            trieda, znak = ((1, "sun") if k == 0 else (2, "sun-low") if k in (1, 2) else (4, "cloud-fog") if k in (45, 48)
+                            else (7, "cloud-storm") if k >= 95 else (6, "cloud-snow") if k in SNEH
+                            else (5, "cloud-rain") if k in DAZD else (3, "cloud"))
+            dnes = (w.get("dni") or [{}])[0]
+            rozsah = "%s° / %s°" % (dnes["max"], dnes["min"]) if "max" in dnes and "min" in dnes else ""
+            teraz_w = {"t": "%s°" % w["teraz"]["t"], "trieda": trieda, "ikona": znak,
+                       "miesto": " · ".join(x for x in (w.get("miesto") or "", rozsah) if x)}
+    except Exception:
+        pass
+    return {"nebo": nb, "zrazky": zrazky, "sneh": sneh, "vietor": vietor, "pocasie": teraz_w}
+
+
+def prihlasenie():
+    """údaje scény prihlásenia (session/goo/login.plm): kto sa prihlasuje, káva, čo je pod hladinou (posledný pád,
+    inak novinky z RSS v greeter.conf), informačné goo (batéria, úlohy) a znaky ikon. Beží ako prihlásený používateľ
+    (zámok relácie) aj ako používateľ prihlasovača (greetd) — vtedy meno berie z posledného prihlásenia."""
+    import pwd, time
+    login = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    if os.getuid() < 1000:                               # prihlasovač: naposledy prihlásený, inak prvý bežný účet
+        try:
+            login = open("/var/lib/greetd/latte-last-user").read().strip() or login
+        except OSError:
+            pass
+        if not login or pwd.getpwnam(login).pw_uid < 1000:
+            login = next((u.pw_name for u in pwd.getpwall() if 1000 <= u.pw_uid < 60000 and "nologin" not in u.pw_shell), login)
+    try:
+        meno = pwd.getpwnam(login).pw_gecos.split(",")[0].strip() or login
+    except KeyError:
+        meno = login
+    try:
+        kava = list(KAVY.get((re.findall(r"[\w-]+", open(KAVA).read()) or ["espresso"])[0], KAVY["espresso"]))
+    except OSError:
+        kava = [0.55, 0]
+    conf = greeter_conf()
+    # posledný pád: iba ak k nemu došlo od štartu počítača (alebo počítadlo pádov nie je nula)
+    panel, riadky = "", []
+    log = os.path.join(GREETER, "last-crash.log")
+    try:
+        boot = time.time() - float(open("/proc/uptime").read().split()[0])
+        try:
+            pady = int(open("/var/lib/latteos/crash-count").read().split()[0])
+        except (OSError, ValueError, IndexError):
+            pady = 0
+        if os.path.getmtime(log) >= boot or pady > 0:
+            for line in open(log, encoding="utf-8", errors="replace").read().splitlines():
+                line = line.rstrip()
+                while len(line) > 108:
+                    riadky.append(line[:108]); line = "  " + line[108:]
+                riadky.append(line)
+            riadky = [r for i, r in enumerate(riadky) if r.strip() or (0 < i < len(riadky) - 1)][:14]
+            panel = "pad" if riadky else ""
+    except OSError:
+        pass
+    rss_cache = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "login-novinky.json")
+    if not panel and conf.get("rss_url") and conf.get("panel", "rss") != "none":
+        try:                                             # titulky sa nesťahujú pri každom volaní (scéna sa pýta raz za minútu)
+            if time.time() - os.path.getmtime(rss_cache) < 15 * 60:
+                c = json.load(open(rss_cache))
+                if c.get("url") == conf["rss_url"]:
+                    riadky, panel = c.get("riadky", []), "novinky" if c.get("riadky") else ""
+        except (OSError, ValueError, AttributeError):
+            pass
+    if not panel and conf.get("rss_url") and conf.get("panel", "rss") != "none":
+        try:                                             # novinky: titulky z RSS alebo Atom, krátko čakať
+            import itertools, urllib.request, xml.etree.ElementTree as ET
+            zdroje = []                                  # viac zdrojov (oddelené medzerou, čiarkou alebo bodkočiarkou): striedavo
+            for url in [u for u in re.split(r"[\s,;]+", conf["rss_url"]) if u][:4]:
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "LatteOS"})
+                    root = ET.fromstring(urllib.request.urlopen(req, timeout=4).read())
+                except Exception:
+                    continue
+                tit = []
+                for it in list(root.iter("item")) or [e for e in root.iter() if e.tag.endswith("}entry")]:
+                    t = next((c.text for c in it if c.tag.split("}")[-1] == "title" and c.text), "")
+                    if t.strip():
+                        tit.append(" ".join(t.split()))
+                    if len(tit) >= 8:
+                        break
+                zdroje.append(tit)
+            riadky = [t for kolo in itertools.zip_longest(*zdroje) for t in kolo if t][:8]
+            panel = "novinky" if riadky else ""
+            os.makedirs(os.path.dirname(rss_cache), exist_ok=True)
+            json.dump({"url": conf["rss_url"], "riadky": riadky}, open(rss_cache, "w"), ensure_ascii=False)
+        except Exception:                                # bez siete nič: pod hladinou ostane iba káva
+            panel, riadky = "", []
+    o = obloha(conf)
+    obloha_, zrazky, sneh, teraz_w = o["nebo"], o["zrazky"], o["sneh"], o["pocasie"]
+    info = []
+    for b in sorted(glob.glob("/sys/class/power_supply/BAT*")):
+        try:
+            pct = int(open(b + "/capacity").read())
+            nab = open(b + "/status").read().strip() == "Charging"
+            info.append({"ikona": "battery-charging" if nab else "battery-%d" % min(4, max(1, round(pct / 25))), "text": "%d %%" % pct})
+            break
+        except (OSError, ValueError):
+            pass
+    if os.getuid() >= 1000:                              # úlohy a dnešné udalosti: iba vlastné údaje prihláseného
+        base = os.path.join(os.environ.get("XDG_DATA_HOME", HOME + "/.local/share"), "latteos")
+        n = 0
+        try:
+            n += sum(1 for t in json.load(open(os.path.join(base, "todo.json"))) if isinstance(t, dict) and not t.get("done"))
+        except (OSError, ValueError, TypeError):
+            pass
+        try:
+            dnes = time.strftime("%Y-%m-%d")
+            n += sum(1 for e in json.load(open(os.path.join(base, "events.json"))) if isinstance(e, dict) and str(e.get("date", "")) == dnes)
+        except (OSError, ValueError, TypeError):
+            pass
+        if n:
+            info.append({"ikona": "calendar-event", "text": str(n)})
+    goopower = None
+    try:
+        goopower = json.load(open(STATE)).get("goopower", {}).get("x")
+    except (OSError, ValueError, AttributeError):
+        try:                                             # prihlasovač: výťah z profilu účtu (latte-gooconfig, uloz-stav)
+            hint = json.load(open(os.path.join(GREETER, "goo-%s.json" % login)))
+            goopower = hint.get("goopower")
+            if hint.get("kava") in KAVY:                 # káva pri prihlásení je káva toho, kto sa prihlasuje
+                kava = list(KAVY[hint["kava"]])
+        except (OSError, ValueError, AttributeError):
+            pass
+    # relácie na výber (vývojárska verzia): ako v doterajšom prihlasovači — LatteOS GOO, potom samostatné prostredia
+    lang = (os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or "").split(".")[0]
+    poradie = ["latteos", "marea-wm", "marea-hyprland", "latteos-noctalia", "serpantinum"]
+    relacie, seen = [], set()
+    for f in sorted(glob.glob("/usr/share/latteos/sessions/*.desktop")) + sorted(glob.glob("/usr/share/wayland-sessions/*.desktop")):
+        b = os.path.basename(f)[:-8]
+        if b in seen or b in ("hyprland", "hyprland-uwsm", "gamescope-session-steam"):
+            continue
+        seen.add(b)
+        kv = {}
+        try:
+            for line in open(f, encoding="utf-8", errors="replace"):
+                k, _, v = line.strip().partition("=")
+                kv.setdefault(k, v)
+        except OSError:
+            continue
+        if kv.get("Hidden", "").lower() == "true" or kv.get("NoDisplay", "").lower() == "true":
+            continue
+        meno_r = kv.get("Name[%s]" % lang) or kv.get("Name[%s]" % lang.split("_")[0]) or kv.get("Name") or b
+        relacie.append({"subor": b, "meno": meno_r, "prikaz": [x for x in kv.get("Exec", "").split() if not re.fullmatch(r"%[a-zA-Z]", x)]})
+    relacie.sort(key=lambda r: (poradie.index(r["subor"]) if r["subor"] in poradie else 99, r["meno"]))
+    try:
+        posl = open("/var/lib/greetd/latte-last-session").read().strip()
+    except OSError:
+        posl = ""
+    vybrana = next((i for i, r in enumerate(relacie) if r["subor"] == posl), 0)
+    try:                                                 # vývojárska verzia = nainštalovaná zo zdrojového stromu
+        dev = any(l.startswith("source=") for l in open("/usr/share/latteos/VERSION"))
+    except OSError:
+        dev = True
+    names = ["power", "arrow-right", "moon", "refresh", "battery-3", "bell", "calendar-event", "device-desktop"] + [i["ikona"] for i in info] + ([teraz_w["ikona"]] if teraz_w else [])
+    return {"meno": meno, "login": login, "kava": kava, "panel": panel, "riadky": riadky, "info": info[:3],
+            "goopower": goopower, "relacie": relacie[:6], "relacia": vybrana, "dev": dev, "ikony": glyphs(names),
+            "nebo": obloha_, "zrazky": zrazky, "sneh": sneh, "pocasie": teraz_w}
+
+
+def main(a):
+    c = a[0] if a else ""
+    if c == "zoznam":
+        print(json.dumps(load_all("--priklady" in a), ensure_ascii=False)); return 0
+    if c == "skontroluj":
+        ds = load_all()
+        if not ds:
+            print(f"žiadne kvapky v {CONF} (nová: latte-goo novy MENO)")
+        for d in ds:
+            print(("✗ " + d["zdroj"] + ": " + d["chyba"]) if "chyba" in d else ("✓ " + d["id"] + " · " + d.get("nazov", "")))
+        return 1 if any("chyba" in d for d in ds) else 0
+    if c == "novy" and len(a) >= 2:
+        name = " ".join(a[1:])
+        i = slug(name) or "kvapka"
+        os.makedirs(CONF, exist_ok=True)
+        p = os.path.join(CONF, i + ".json")
+        if os.path.exists(p):
+            print(p); return 0
+        v = dict(VZOR, id=i, nazov=name)
+        json.dump(v, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        print(p); return 0
+    if c == "akcia" and len(a) == 3:
+        d = find(a[1])
+        if not d:
+            print(f"kvapka {a[1]} nie je", file=sys.stderr); return 1
+        acts = d.get("akcie", {})
+        act = acts.get(a[2]) or (acts.get("koliesko", {}).get(a[2]) if isinstance(acts.get("koliesko"), dict) else None)
+        if act is None:
+            return 0
+        return run_action(act)
+    if c == "text" and len(a) == 2:
+        d = find(a[1])
+        t = d and d.get("text")
+        if isinstance(t, dict):
+            try:
+                out = subprocess.run(["sh", "-c", t["prikaz"]], capture_output=True, text=True, timeout=5).stdout
+            except subprocess.TimeoutExpired:
+                out = "…"
+            print((out.strip().splitlines() or [""])[0][:12])
+        elif isinstance(t, str):
+            print(t)
+        return 0
+    if c == "upozornenie" and len(a) == 2:
+        d = find(a[1])
+        u = d and d.get("upozornenie")
+        if u:
+            try:
+                out = subprocess.run(["sh", "-c", u["prikaz"]], capture_output=True, text=True, timeout=5).stdout.strip()
+            except subprocess.TimeoutExpired:
+                out = ""
+            w = (out.split() or [""])[0].lower()
+            print(w if w in JADRA else ("ine" if w else ""))
+        return 0
+    if c == "cas":
+        print(json.dumps(cas(), ensure_ascii=False)); return 0
+    if c in ("spustac", "spustac-uloz"):
+        path = os.path.join(os.path.dirname(os.path.dirname(CONF)), "spustac.json")
+        try:
+            cfg = json.load(open(path))
+            assert isinstance(cfg, dict)
+        except (OSError, ValueError, AssertionError):
+            cfg = {}
+        if c == "spustac":
+            # domovské priečinky pre režim Súbory (logika nepozná domov ani xdg-user-dir)
+            def xdg(k, d):
+                try:
+                    p = subprocess.run(["xdg-user-dir", k], capture_output=True, text=True, timeout=2).stdout.strip()
+                except (OSError, subprocess.TimeoutExpired):
+                    p = ""
+                return p if p and p != HOME and os.path.isdir(p) else os.path.join(HOME, d)
+            cfg["_domov"] = HOME
+            cfg["_priecinky"] = [{"name": "Home", "path": HOME, "glyph": "home", "kratko": "~"}] + [
+                {"name": n, "path": xdg(k, d), "glyph": g, "kratko": "~/" + os.path.basename(xdg(k, d))}
+                for n, k, d, g in (("Documents", "DOCUMENTS", "Dokumenty", "file-text"), ("Downloads", "DOWNLOAD", "Stiahnuté", "download"),
+                                   ("Pictures", "PICTURES", "Obrázky", "photo"), ("Music", "MUSIC", "Hudba", "music"),
+                                   ("Videos", "VIDEOS", "Videá", "movie"), ("Desktop", "DESKTOP", "Plocha", "device-desktop"))
+                if os.path.isdir(xdg(k, d))]
+            print(json.dumps(cfg, ensure_ascii=False)); return 0
+        if len(a) != 3 or a[1] not in ("mode", "recent", "cmds"):
+            print("spustac-uloz: kľúč mode | recent | cmds a hodnota JSON", file=sys.stderr); return 1
+        try:
+            cfg[a[1]] = json.loads(a[2])
+        except ValueError:
+            print("spustac-uloz: hodnota nie je JSON", file=sys.stderr); return 1
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".new", "w") as f:
+            json.dump(cfg, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(path + ".new", path)
+        return 0
+    if c == "kalendar":
+        print(json.dumps(kalendar(), ensure_ascii=False)); return 0
+    if c == "pocasie":
+        print(json.dumps(pocasie(), ensure_ascii=False)); return 0
+    if c == "zvon" and len(a) >= 2:
+        zvon(a[1], a[2] if len(a) > 2 else ""); return 0
+    if c == "nastavenia":      # Nastavenia › Kvapky: skryté voliteľné kvapky, veľkosť, vrátenie na miesto
+        try:
+            print(json.dumps(json.load(open(os.path.join(os.path.dirname(os.path.dirname(CONF)), "kvapky.json"))), ensure_ascii=False))
+        except (OSError, ValueError):
+            print("{}")
+        return 0
+    if c == "stav":
+        try:
+            print(json.dumps(json.load(open(STATE)), ensure_ascii=False))
+        except (OSError, ValueError):
+            print("{}")
+        return 0
+    if c == "uloz-stav" and len(a) == 2:
+        try:
+            v = json.loads(a[1])
+            assert isinstance(v, dict)
+        except (ValueError, AssertionError):
+            print("uloz-stav: čakám objekt JSON", file=sys.stderr); return 1
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE + ".new", "w") as f:
+            json.dump(v, f, ensure_ascii=False)
+        os.replace(STATE + ".new", STATE)
+        # kde sedí GooPower, smie vedieť aj prihlasovanie (iný účet, do domova nevidí): LoginGoo po hesle spadne presne
+        # tam, kde ju plocha po prihlásení ukáže (LATTEOS-GOO.md §6.2)
+        try:
+            import pwd
+            x = v.get("goopower", {}).get("x")
+            if isinstance(x, (int, float)) and os.access(GREETER, os.W_OK) and not VEDLAJSI:
+                p = os.path.join(GREETER, "goo-%s.json" % pwd.getpwuid(os.getuid()).pw_name)
+                try:                                     # výťah píše aj latte-gooconfig (káva): doplniť, neprepísať
+                    hint = json.load(open(p))
+                    assert isinstance(hint, dict)
+                except (OSError, ValueError, AssertionError):
+                    hint = {}
+                hint["goopower"] = x
+                with open(p + ".new", "w") as f:
+                    json.dump(hint, f)
+                os.replace(p + ".new", p)
+        except (OSError, KeyError, AttributeError):
+            pass
+        return 0
+    if c == "okna":
+        print(json.dumps(visible_windows())); return 0
+    if c == "rezim":
+        try:
+            print(open(os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "latteos", "window-mode")).read().split()[0])
+        except (OSError, IndexError):
+            print("plavajuce")
+        return 0
+    if c == "kava":
+        try:
+            name = (re.findall(r"[\w-]+", open(KAVA).read()) or ["espresso"])[0]
+        except OSError:
+            name = "espresso"
+        print(json.dumps(list(KAVY.get(name, KAVY["espresso"])))); return 0
+    if c == "login-skuska":
+        # scéna prihlásenia na skúšku nad bežiacou plochou (hlavný monitor): nič nemení, sama skončí
+        sek = a[1] if len(a) > 1 and a[1].isdigit() else "40"
+        mon = ""
+        try:
+            mons = json.loads(subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True, text=True, timeout=2).stdout)
+            mon = next((m["name"] for m in mons if m.get("x") == 0 and m.get("y") == 0), mons[0]["name"]) if mons else ""
+        except (OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired):
+            pass
+        os.chdir(SHARE)
+        os.environ["LATTE_LOGIN"] = "skuska"
+        os.execvp("pleamar", ["pleamar", "--scene", "login.plm", "--no-hud", "--seconds", sek] + (["--screen", mon] if mon else []))
+    if c == "goopower-miesto" and len(a) == 2 and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", a[1]):
+        # kde má GooPower tento účet (odkladá uloz-stav): prihlásenie iným menom než predvyplneným
+        try:
+            x = json.load(open(os.path.join(GREETER, "goo-%s.json" % a[1]))).get("goopower")
+            print(x if isinstance(x, (int, float)) else "")
+        except (OSError, ValueError, AttributeError):
+            print("")
+        return 0
+    if c == "obloha":
+        print(json.dumps(obloha(), ensure_ascii=False)); return 0
+    if c == "prihlasenie":
+        print(json.dumps(prihlasenie(), ensure_ascii=False)); return 0
+    if c == "ucet":
+        print(json.dumps(ucet(), ensure_ascii=False)); return 0
+    if c in ("profil", "profil-nastav"):
+        if c == "profil-nastav" and (len(a) != 2 or a[1] not in ("power-saver", "balanced", "performance")):
+            print("profil-nastav: power-saver | balanced | performance", file=sys.stderr); return 1
+        print(json.dumps(profil(a[1] if c == "profil-nastav" else None))); return 0
+    if c == "pas":
+        f = os.path.join(os.path.dirname(STATE), "pas")
+        if len(a) == 2 and a[1] in ("on", "off"):
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            open(f, "w").write(a[1] + "\n")
+        try:
+            print(open(f).read().strip() or "off")
+        except OSError:
+            print("off")
+        return 0
+    if c == "ikony":
+        print(json.dumps(glyphs(a[1:]), ensure_ascii=False)); return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

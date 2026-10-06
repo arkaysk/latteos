@@ -1,0 +1,181 @@
+diff --git a/src/gpu.rs b/src/gpu.rs
+index ef15af6..8375833 100644
+--- a/src/gpu.rs
++++ b/src/gpu.rs
+@@ -1724,7 +1724,13 @@ impl Gpu {
+                 let caps = first.get_capabilities(&adapter);
+                 // No sRGB: the compositor blends the bytes as they are, and premultiplied
+                 // alpha only works out if nobody re-encodes them along the way.
+-                let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
++                // 8 bits first: a float surface (Rgba16Float, listed first by RADV) is taken by
++                // Hyprland as linear light and encoded once more, which lightens every dark colour.
++                let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
++                    .into_iter()
++                    .find(|f| caps.formats.contains(f))
++                    .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
++                    .unwrap_or(caps.formats[0]);
+                 let alpha = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                     wgpu::CompositeAlphaMode::PreMultiplied
+                 } else {
+diff --git a/src/platform/compositor.rs b/src/platform/compositor.rs
+index ec269dc..f1c6797 100644
+--- a/src/platform/compositor.rs
++++ b/src/platform/compositor.rs
+@@ -67,8 +67,10 @@ struct State {
+     group_monitor: HashMap<u32, String>,
+     workspace_group: HashMap<u32, u32>,
+     output_name: HashMap<u32, String>,
+-    dispatch_window: Option<Box<dyn Fn(SysValue) + Send>>,
+-    dispatch_workspaces: Option<Box<dyn Fn(SysValue) + Send>>,
++    // Every one who listens: a scene's `service window` and its logic's `sys.watch("window")` are two
++    // listeners, and with a single slot the second one silenced the first —the scene kept a stale list—.
++    dispatch_window: Vec<Box<dyn Fn(SysValue) + Send>>,
++    dispatch_workspaces: Vec<Box<dyn Fn(SysValue) + Send>>,
+     last_window: String,
+     last_workspaces: String,
+     next: i64,
+@@ -79,7 +81,7 @@ impl State {
+     /// all of them in the order they came —each with its `id`, for
+     /// `window.restore(id)`—.
+     fn report_window(&mut self) {
+-        let Some(dispatch) = &self.dispatch_window else { return };
++        if self.dispatch_window.is_empty() { return; }
+         let active = self.toplevels.values().filter(|v| v.active).max_by_key(|v| v.activated_at).cloned().unwrap_or_default();
+         let mut ids: Vec<&u32> = self.toplevels.keys().collect();
+         ids.sort();
+@@ -106,7 +108,7 @@ impl State {
+         let fingerprint = format!("{v:?}");
+         if fingerprint != self.last_window {
+             self.last_window = fingerprint;
+-            dispatch(v);
++            for dispatch in &self.dispatch_window { dispatch(v.clone()); }
+         }
+     }
+ 
+@@ -114,7 +116,7 @@ impl State {
+     /// compositor reported them, so that `workspaces.focus(3)` means the same here
+     /// as in Hyprland, which numbers them.
+     fn report_workspaces(&mut self) {
+-        let Some(dispatch) = &self.dispatch_workspaces else { return };
++        if self.dispatch_workspaces.is_empty() { return; }
+         let mut list: Vec<&Workspace> = self.workspaces.values().collect();
+         list.sort_by_key(|e| e.number);
+         let active = list.iter().find(|e| e.active).map_or(0, |e| e.number);
+@@ -133,7 +135,7 @@ impl State {
+         let fingerprint = format!("{v:?}");
+         if fingerprint != self.last_workspaces {
+             self.last_workspaces = fingerprint;
+-            dispatch(v);
++            for dispatch in &self.dispatch_workspaces { dispatch(v.clone()); }
+         }
+     }
+ }
+@@ -333,7 +335,7 @@ pub fn service(name: &str, dispatch: Box<dyn Fn(SysValue) + Send>) -> bool {
+     let mut e = state.lock().unwrap();
+     match name {
+         "window" => {
+-            e.dispatch_window = Some(dispatch);
++            e.dispatch_window.push(dispatch);
+             e.last_window.clear();
+             e.report_window();
+         }
+@@ -341,7 +343,7 @@ pub fn service(name: &str, dispatch: Box<dyn Fn(SysValue) + Send>) -> bool {
+             if e.manager.is_none() {
+                 return false;
+             }
+-            e.dispatch_workspaces = Some(dispatch);
++            e.dispatch_workspaces.push(dispatch);
+             e.last_workspaces.clear();
+             e.report_workspaces();
+         }
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index b1e5091..d2ba038 100644
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -132,7 +132,7 @@ fn start_service(from: &str, name: &str, notify: Box<dyn Fn(SysValue) + Send>) -
+     // `PLEAMAR_GENERIC=1` skips the Hyprland path: it's how to test here what
+     // the other compositors will see.
+     #[cfg(target_os = "linux")]
+-    if hyprland::is_present() && std::env::var_os("PLEAMAR_GENERIC").is_none() {
++    if hyprland_path(name) {
+         return hyprland::service(name, notify);
+     }
+     // Any other Wayland: the protocols everyone understands.
+@@ -194,7 +194,7 @@ pub fn command(from: &str, name: &str, args: &[SysValue]) -> Result<(), String>
+         return thumbnails::command(name, args);
+     }
+     #[cfg(target_os = "linux")]
+-    if hyprland::is_present() && std::env::var_os("PLEAMAR_GENERIC").is_none() {
++    if hyprland_path(name.split('.').next().unwrap_or(name)) {
+         return hyprland::command(name, args);
+     }
+     #[cfg(target_os = "linux")]
+@@ -619,7 +619,7 @@ pub static CURSOR_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
+ /// arrives, and `cursor.x` is only known over the scene, like `pointer.x`.
+ pub fn watch_cursor(to_render: std::sync::mpsc::Sender<crate::scene::ToRender>) {
+     #[cfg(target_os = "linux")]
+-    if hyprland::is_present() && std::env::var_os("PLEAMAR_GENERIC").is_none() {
++    if hyprland_path("cursor") {
+         hyprland::watch_cursor(to_render);
+     } else if let Some(dir) = std::env::var("PLEAMAR_SOCKETS").ok().filter(|d| std::path::Path::new(&format!("{d}/cursor.sock")).exists()) {
+         session_cursor(dir, to_render);
+@@ -809,3 +809,18 @@ pub use wayland::icon;
+ pub fn icon(_: &str) -> Option<std::path::PathBuf> {
+     None
+ }
++
++/// Whether `what` (a service, a command's family, or "cursor") goes through
++/// Hyprland's socket. `PLEAMAR_GENERIC=1` sends everything through the
++/// protocols every compositor understands; `PLEAMAR_GENERIC=window` (a list,
++/// comma separated) only what it names: on Hyprland the `window` service reports
++/// only the active window, while wlr-foreign-toplevel lists them all, and the
++/// cursor can still come from Hyprland.
++#[cfg(target_os = "linux")]
++fn hyprland_path(what: &str) -> bool {
++    hyprland::is_present()
++        && match std::env::var("PLEAMAR_GENERIC") {
++            Err(_) => true,
++            Ok(v) => !v.split(',').map(str::trim).any(|p| p == "1" || p == what),
++        }
++}
+diff --git a/src/platform/wayland.rs b/src/platform/wayland.rs
+index de9eead..21e7c24 100644
+--- a/src/platform/wayland.rs
++++ b/src/platform/wayland.rs
+@@ -1727,12 +1727,31 @@ smithay_client_toolkit::delegate_dispatch2!(State);
+ /// small. Good enough for application icons.
+ pub fn icon(name: &str) -> Option<std::path::PathBuf> {
+     let home = std::env::var("HOME").unwrap_or_default();
+-    let bases = [format!("{home}/.local/share/icons"), format!("{home}/.icons"), "/usr/share/icons".into()];
+-    let themes = ["hicolor", "Papirus", "Papirus-Dark", "Adwaita", "breeze", "breeze-dark"];
+-    let sizes = ["scalable", "512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "symbolic"];
+-    let contexts = ["apps", "devices", "places", "status", "actions", "categories", "mimetypes"];
++    // Every icons directory of XDG_DATA_DIRS too: Flatpak apps put theirs under …/flatpak/exports/share/icons.
++    let mut bases = vec![format!("{home}/.local/share/icons"), format!("{home}/.icons")];
++    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
++    for d in data_dirs.split(':').filter(|d| !d.is_empty()) {
++        let b = format!("{}/icons", d.trim_end_matches('/'));
++        if !bases.contains(&b) {
++            bases.push(b);
++        }
++    }
++    if !bases.iter().any(|b| b == "/usr/share/icons") {
++        bases.push("/usr/share/icons".into());
++    }
++    // The theme the user asked for first (PLEAMAR_ICON_THEME, or the one Quickshell apps use), then the usual ones.
++    let wanted = std::env::var("PLEAMAR_ICON_THEME").or_else(|_| std::env::var("QS_ICON_THEME")).unwrap_or_default();
++    let mut themes: Vec<&str> = Vec::new();
++    if !wanted.is_empty() {
++        themes.push(&wanted);
++    }
++    themes.extend(["hicolor", "Papirus", "Papirus-Dark", "Adwaita", "AdwaitaLegacy", "breeze", "breeze-dark"]);
++    // Both spellings of the size: hicolor and Adwaita say 48x48, breeze says 48.
++    let sizes = ["scalable", "512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32", "24x24", "symbolic",
++                 "64", "48", "32", "24", "22"];
++    let contexts = ["apps", "devices", "places", "status", "actions", "categories", "mimetypes", "legacy"];
+     for base in &bases {
+-        for theme in themes {
++        for theme in &themes {
+             for size in sizes {
+                 for context in contexts {
+                     for ext in ["svg", "png"] {

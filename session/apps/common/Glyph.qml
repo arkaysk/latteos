@@ -7,6 +7,20 @@ Text {
     property real size: 18
     readonly property var map: ({
         "logout": 0xEBA8,
+        "briefcase": 0xEA46,                 // obchod: kategórie v ľavom paneli (AppManager)
+        "message-circle": 0xEAED,
+        "robot": 0xF00B,
+        "coin": 0xEB82,
+        "code": 0xEA77,
+        "school": 0xECF7,
+        "flask": 0xEBD2,
+        "compass": 0xEA79,
+        "building-store": 0xEA4E,
+        "cut": 0xEA86,              // ponuka úprav textu (LTextInput)
+        "arrow-back-up": 0xEB77,
+        "arrow-forward-up": 0xEB78,
+        "backspace": 0xEA2D,
+        "select-all": 0xF9F7,
         "chevron-down": 0xEA5F,
         "variable": 0xEF05,
         "wifi-0": 0xEBA3,
@@ -141,6 +155,7 @@ Text {
         "list-check": 0xEB6A,
         "list": 0xEB6B,
         "printer": 0xEB0E,
+        "scan": 0xEBC8,
         "tool": 0xEB40,
         "network": 0xF09F,
         "menu-2": 0xEC42,

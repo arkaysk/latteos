@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Noctalia (plain)
+Name[sk]=Noctalia (čistá)
+Comment=Hyprland and Noctalia with their own defaults, without LatteOS changes — for experiments
+Comment[sk]=Hyprland a Noctalia s ich predvolenými nastaveniami, bez úprav LatteOS — na pokusy
+Exec=/usr/bin/latte-session noctalia
+Type=Application
+DesktopNames=Hyprland

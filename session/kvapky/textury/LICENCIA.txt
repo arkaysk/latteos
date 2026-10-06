@@ -1,0 +1,7 @@
+Textúry materiálov okien Goo (vyrobil session/kvapky/textury.py)
+
+hlinik_*.webp    ambientCG Metal009 (brúsený kov)            CC0 1.0 — https://ambientcg.com/view?id=Metal009
+striebro_*.webp  ambientCG Metal010 (brúsený kov so šmuhami)  CC0 1.0 — https://ambientcg.com/view?id=Metal010
+zlato_*.webp     vygenerované (tepaný kov), bez cudzieho zdroja
+
+Zafarbené farbou okien témy LatteOS, s prechodom priehľadnosti k uchu kvapky.

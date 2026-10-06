@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """latte-shellset — zmení voľbu Noctalie z Nastavení LatteOS bez editovania súborov rukou.
 
-Zapisuje do ~/.local/state/noctalia/settings.toml (vrstva prepisov nad /usr/share/latteos/noctalia/config.toml),
+Zapisuje do ~/.local/state/latteos/noctalia/settings.toml (vrstva prepisov nad /usr/share/latteos/noctalia/config.toml),
 ktorú Noctalia sleduje a prevezme hneď (hot reload).
 
   latte-shellset get  bar.main.margin_ends
@@ -10,7 +10,11 @@ ktorú Noctalia sleduje a prevezme hneď (hot reload).
 """
 import os, re, sys, tomllib
 
-STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "noctalia")
+# stav Noctalie LatteOS (oddelený od pôvodnej Noctalie, latte-session): $NOCTALIA_STATE_HOME/noctalia
+# (Kvapky: ~/.local/state/latteos/kvapky/noctalia — podľa príznaku, platí aj pri prepnutí za behu)
+_latte = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "latteos")
+_kvapky = os.path.exists(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid()), "latteos", "kvapky"))
+STATE = os.path.join(os.path.join(_latte, "kvapky") if _kvapky else _latte, "noctalia")
 PATH = os.path.join(STATE, "settings.toml")
 BARE = re.compile(r"^[A-Za-z0-9_-]+$")
 

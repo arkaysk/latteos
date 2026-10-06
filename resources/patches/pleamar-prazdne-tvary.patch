@@ -1,0 +1,22 @@
+diff --git a/src/gpu.rs b/src/gpu.rs
+index 9b788d2..38b8e9e 100644
+--- a/src/gpu.rs
++++ b/src/gpu.rs
+@@ -1027,6 +1027,17 @@ impl DrawList {
+                 }
+                 Instr::Shape { shape, fusion: blend } => {
+                     let p = flatten(shape, &transforms, &mut self.points);
++                    // A shape of no size is not there, like a box under half a pixel: it neither
++                    // paints nor blends (a point would still raise a bump through the blend), and
++                    // it costs nothing — a body can keep slots for things that come and go.
++                    let empty = match p.kind {
++                        0 => p.radius * p.ex.abs().max(p.ey.abs()) < 0.25,
++                        3 => p.stroke < 0.25,
++                        _ => false,
++                    };
++                    if empty {
++                        continue;
++                    }
+                     let k = blend.eval(c).max(0.0);
+                     let bounds = p.bounds();
+                     self.push_shape(p, k);

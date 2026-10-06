@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/latte-hw", "crates/latte-boot"]
+exclude = ["resources/upstream"]   # cudzie projekty (fetch.sh) majú vlastné Cargo.toml
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = ["Arkay"]

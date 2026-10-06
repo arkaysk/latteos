@@ -19,6 +19,9 @@ function K.profile()
     return (p == "linux" or p == "mac") and p or "windows"
 end
 
+-- zámok obrazovky: v LatteOS GOO scéna enginu Goo (latte-zamok, pri chybe prejde na zámok Noctalie), inak Noctalia
+local zamok = os.getenv("LATTE_VARIANT") == "kvapky" and "latte-zamok" or "noctalia msg session lock"
+
 local function bind(keys, action, opts) hl.bind(keys, action, opts) end
 local function run(cmd) return hl.dsp.exec_cmd(cmd) end
 local function panel(id, ctx) return run("noctalia msg panel-toggle " .. id .. (ctx and (" " .. ctx) or "")) end
@@ -34,13 +37,32 @@ local function normal_windows(ws_id)
     return out
 end
 local function minimize(w)
+    -- v páske (ako v niri) sa nič neminimalizuje, okno iba odíde z pohľadu
+    if latte and latte.tape_on and latte.tape_on() then latte.tape_away(w); return end
+    if latte and latte.goo_min then pcall(latte.goo_min, w) end
     hl.dispatch(hl.dsp.window.move({ workspace = "special:minimized", follow = false, window = "address:" .. w.address }))
 end
 
 latte = latte or {}
+-- engine Goo (LATTEOS-GOO.md pravidlo 14): minimalizované okno padne ako kvapka do GooBaru. Scéne sa povie, odkiaľ:
+-- poloha a rozmer okna ako štyri hodnoty (wm.x, wm.y, wm.w, wm.h) a potom udalosť — číslo pri udalosti z príkazového
+-- riadka má malý rozsah, zbalené do jedného neprešli. Bez scény „goo“ príkazy nič neurobia (iné plochy).
+function latte.goo_min(w)
+    if os.getenv("LATTE_VARIANT") ~= "kvapky" or not w then return end
+    local function xy(v)
+        if type(v) ~= "table" then return 0, 0 end
+        return math.floor(tonumber(v.x or v[1]) or 0), math.floor(tonumber(v.y or v[2]) or 0)
+    end
+    local x, y = xy(w.at)
+    local ww, wh = xy(w.size)
+    if ww <= 0 or wh <= 0 then return end
+    hl.exec_cmd(string.format("pleamar --say goo 'fact wm.x %d' && pleamar --say goo 'fact wm.y %d' && pleamar --say goo 'fact wm.w %d'"
+        .. " && pleamar --say goo 'fact wm.h %d' && pleamar --say goo 'emit win_min 1'", x, y, ww, wh))
+end
 latte.keys = latte.keys or {}
 -- Win+M: minimalizovať všetko na ploche; Win+Home: všetko okrem aktívneho
 function latte.keys.minimize_all(keep_active)
+    if latte.tape_on and latte.tape_on() then return end   -- páska: nič sa neschováva
     local a = hl.get_active_window()
     for _, w in ipairs(normal_windows(cur_ws())) do
         if not (keep_active and a and w.address == a.address) then minimize(w) end
@@ -176,11 +198,22 @@ local function common()
     bind("SUPER + mouse:273", hl.dsp.window.resize(), { mouse = true })
     bind("SUPER + mouse_down", hl.dsp.focus({ workspace = "e+1" }))
     bind("SUPER + mouse_up",   hl.dsp.focus({ workspace = "e-1" }))
+    -- Super + Shift + koliesko: páska sa plynulo posunie o štvrť obrazovky (ako v niri; kolieskom nad lištou Kvapky bez klávesu)
+    local function tape_step(d)
+        local m = hl.get_active_monitor and hl.get_active_monitor()
+        local px = math.floor(((m and m.width) or 1920) * 0.25)
+        hl.dispatch(hl.dsp.layout(string.format("move %s%d", d > 0 and "-" or "+", px)))
+    end
+    bind("SUPER + SHIFT + mouse_down", function() tape_step(1) end)
+    bind("SUPER + SHIFT + mouse_up",   function() tape_step(-1) end)
     -- LatteOS doplnky (nekolidujú s Windows): Herňa, rozloženia okna, prehľad pásky, plocha, zamknúť, Súbory
     bind("SUPER + G", panel("latteos/games:panel"))
+    bind("SUPER + SHIFT + G", run("latte-hra"))                                  -- herný režim: Steam Big Picture (gamescope)
     bind("SUPER + Z", panel("latteos/snap:panel"))
     bind("SUPER + Tab", panel("latteos/overview:panel"))
-    bind("SUPER + L", run("noctalia msg session lock"))
+    bind("SUPER + L", run(zamok))
+    -- vstup do Goo z klávesnice (ako „prejdi na panel úloh“ vo Windows): šípky po kvapkách, Enter klik, Esc von
+    if os.getenv("LATTE_VARIANT") == "kvapky" then bind("SUPER + T", run('pleamar --say goo "emit kb_toggle"')) end
     bind("SUPER + E", run("latte-app subory"))
     bind("SUPER + SHIFT + left",  hl.dsp.window.move({ monitor = "l" }))
     bind("SUPER + SHIFT + right", hl.dsp.window.move({ monitor = "r" }))
@@ -285,7 +318,7 @@ local function mac()
     bind("SUPER + M", function() latte.win.minimize() end)
     bind("SUPER + H", function() latte.win.minimize() end)
     bind("SUPER + ALT + H", function() latte.keys.minimize_all(true) end)
-    bind("SUPER + CTRL + Q", run("noctalia msg session lock"))
+    bind("SUPER + CTRL + Q", run(zamok))
     bind("SUPER + ALT + Escape", run("latte-app monitor"))                        -- vynútiť ukončenie
     bind("SUPER + SHIFT + 3", run("latte-snimka ulozit"))
     bind("SUPER + SHIFT + 4", run("noctalia msg screenshot-region"))
@@ -306,9 +339,17 @@ end
 
 -- „Zobraziť plochu“: prepne na prázdnu plochu a rovnakou skratkou späť (Win+D, F11 na Macu)
 local desktop_from = nil
+local function ws_empty(ws)
+    for _, w in ipairs(hl.get_windows() or {}) do
+        if w.workspace and tostring(w.workspace.name) == tostring(ws.name) then return false end
+    end
+    return true
+end
 function latte.keys.show_desktop()
     local ws = hl.get_active_workspace()
-    if desktop_from and ws and ws.id ~= desktop_from then
+    -- späť iba z PRÁZDNEJ plochy, na ktorú sa prešlo touto skratkou: kto medzitým prešiel inam (na plochu s oknami),
+    -- tomu ďalšie stlačenie znova ukáže plochu, nie návrat na dávno opustenú (latte-lab 6. 10.)
+    if desktop_from and ws and ws.id ~= desktop_from and ws_empty(ws) then
         hl.dispatch(hl.dsp.focus({ workspace = desktop_from }))
         desktop_from = nil
     else

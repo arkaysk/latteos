@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# latte-marea [wm|hyprland] — pôvodná Marea (github.com/k4ditano/pleamar, pleamar-wm, marea-plm) ako samostatné
+# prostredie na pokusy (30. 9. 2026). Všetko svoje má oddelené od LatteOS: programy v ~/.local/share/marea-povodna
+# (mimo PATH — /usr/bin/pleamar s úpravami LatteOS pre Kvapky ostáva nedotknutý), nastavenia v ~/.config/pleamar
+# (LatteOS ho nepoužíva) a ~/.local/state/marea-plm. Preklad a aktualizácia: setup/lab/marea-povodna.sh.
+#   wm        autorov kompozitor pleamar-wm s Mareou (ako na jeho videu)
+#   hyprland  Marea ako shell na Hyprlande (hypr/marea.lua)
+#   priprav   iba doplní domov a tapetu do nastavení Marey (nižšie) a skončí
+M="$HOME/.local/share/marea-povodna"
+if [ ! -x "$M/bin/pleamar" ]; then
+    echo "latte-marea: pôvodná Marea nie je preložená (setup/lab/marea-povodna.sh)" >&2
+    exit 1
+fi
+export PATH="$M/bin:$PATH"                 # pôvodný pleamar a marea pred LatteOS
+export XDG_SESSION_TYPE=wayland
+# Hlavný monitor a tapeta (latte-lab 6. 10. 2026, dva monitory): Marea žije na prvom monitore v poradí pleamaru, kým
+# nemá uložený domov — bol to vedľajší monitor a hlavný ostal prázdny; v relácii pleamar-wm navyše čierny, lebo
+# v nastaveniach ostala autorova tapeta (CachyOS GreenFeathers), ktorá na Fedore nie je. Preto sa do JEJ nastavení
+# doplní iba to, čo chýba: domov = hlavný monitor LatteOS (prvý v ~/.config/latteos/monitors.lua, Nastavenia ›
+# Hardvér › Obrazovky) a namiesto neexistujúcej tapety tapeta LatteOS. Oboje sa dá v Marei zmeniť (Where she lives,
+# tapety) a potom sa už neprepíše.
+latte_tapeta=/usr/share/backgrounds/latteos/latteos-wallpaper1.jpg
+mons="$(sed -n 's/^[^-]*output *= *"\([^"]*\)".*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/monitors.lua" 2>/dev/null | paste -sd, -)"
+tapeta="$(python3 -c '
+import json, os, sys
+path, home, latte = sys.argv[1:4]
+try: s = json.load(open(path))
+except Exception: s = None
+if not isinstance(s, dict): s = {}
+old = json.dumps(s, sort_keys=True)
+if home and not s.get("home"): s["home"] = home
+if not os.path.isfile(str(s.get("wallpaper") or "")): s["wallpaper"] = latte
+if json.dumps(s, sort_keys=True) != old:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".latte-new", "w") as f: json.dump(s, f, indent=2, ensure_ascii=False)
+    os.replace(path + ".latte-new", path)
+print(s["wallpaper"])
+' "$HOME/.local/share/pleamar/marea/settings.json" "${mons%%,*}" "$latte_tapeta" 2>/dev/null)"
+[ -n "${PLEAMAR_WALLPAPER:-}" ] || export PLEAMAR_WALLPAPER="${tapeta:-$latte_tapeta}"
+# pleamar-wm: monitory zľava doprava ako v LatteOS (hlavný na 0,0); Hyprland ich berie z monitors.lua (hypr/marea.lua)
+[ -n "${PLEAMAR_MONITORS:-}" ] || [ -z "$mons" ] || export PLEAMAR_MONITORS="$mons"
+[ "${1:-}" = priprav ] && exit 0
+# systemd používateľa žije od štartu PC (Sunshine pred prihlásením): premenné cudzej relácie preč
+systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP 2>/dev/null
+case "${1:-wm}" in
+    hyprland)
+        export XDG_CURRENT_DESKTOP=Hyprland
+        exec Hyprland -c /usr/share/latteos/hypr/marea.lua ;;
+    *)
+        # ako autorova relácia (pleamar-wm/install.sh): jediná plocha — programy z dbus a systemd (portály,
+        # upozornenia) sa dozvedia, kde je
+        export XDG_CURRENT_DESKTOP=pleamar XDG_SESSION_DESKTOP=pleamar PLEAMAR_WM_EXPORT=1
+        "$M/bin/pleamar-wm" init >/dev/null 2>&1      # ~/.config/pleamar, iba raz (nikdy neprepíše)
+        exec "$M/bin/pleamar-session" ;;
+esac

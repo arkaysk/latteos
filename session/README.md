@@ -14,9 +14,13 @@ opakovať, konfigurácie vymieňa atomicky). Kontrola bez obrazovky: `setup/f1/a
 | `hypr/hyprland.lua`, `hypr/latte/*.lua` | Lua modul: stupne výkonu, režimy okien, rozloženia (Super+Z), herný režim, OOM, skratky, gestá |
 | `oom/` | OOM politika (F5): najprv aplikácia, nie relácia |
 
+Plocha **LatteOS GOO** (jediná edícia od 5. 10. 2026): engine Goo v `goo/` ([README](goo/README.md)) — nasadzuje sa
+iba on; pôvodná plocha Kvapky v `kvapky/` sa už nenasadzuje (dokumentácia v `docs_zaloha/`). Pluginy lišty Noctalie nižšie patria zrušenej klasickej
+ploche (Classic); v Goo beží z Noctalie iba rohová lišta, ovládacie centrum, OSD a zámok.
+
 ## Shell (Noctalia) — `noctalia/`
 
-`config.toml` je základ (lišta z ostrovov), zmeny používateľa idú do `~/.local/state/noctalia/settings.toml`
+`config.toml` je základ (lišta z ostrovov), zmeny používateľa idú do `~/.local/state/latteos/noctalia/settings.toml`
 (`bin/latte-shellset`). Pluginy (`noctalia/plugins/`, Luau):
 
 | Plugin | Čo robí |
@@ -42,7 +46,7 @@ Nové pluginy (panely) sa načítajú až po reštarte shellu; `require` iba `".
 |---|---|---|
 | `nastavenia` | `latte-shellset`, `latte-theme`, `latte-ai`, `latte-backup`… | vrstvené karty oblastí, detail Stav/Oblasť/Uložené v |
 | `subory` | — | Data Manager: dva panely, štítky, kôš, kopírovanie s priebehom, hľadanie všade |
-| `monitor` | `latte-sysmon` | procesy, po štarte, telemetria (Ctrl+Shift+Esc) |
+| `monitor` | `latte-sysmon` | procesy, po štarte, telemetria (Ctrl+Shift+Esc); `latte-sysmon goo` = pás výkonu GooPower |
 | `aplikacie` | `latte-apps`, `latte-net` | App Manager: Objavovať, Aktualizácie, Nainštalované, NET, „Bude to fungovať?“ |
 | `zariadenia` | `latte-devices` | Device Manager, obrazovky s potvrdením do 15 s |
 | `heidelberg` | — | editor dokumentov (md, html, txt) |

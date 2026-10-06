@@ -20,5 +20,8 @@ if [ -z "$pid" ]; then
         sleep 0.25; pid=$(pgrep -f "^qs -n -p $qml" | head -1); [ -n "$pid" ] && qs ipc --pid "$pid" show >/dev/null 2>&1 && break
     done
 fi
+# ponuka okna: adresa je samostatný argument aj prázdna (= aktívne okno; Alt+Medzerník, lišta-kvapka) —
+# rozdelením $call by prázdna vypadla a IPC by hlásilo „3 required but 2 were provided“
+[ "$kind" = okno ] && exec qs ipc --pid "$pid" call ponuka okno "${1:-0}" "${2:-0}" "${3:-}"
 # shellcheck disable=SC2086
 exec qs ipc --pid "$pid" call ponuka $call

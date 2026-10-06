@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# latte-session [safe] — relácia LatteOS po prihlásení (spúšťa ju greetd cez wayland-sessions/*.desktop).
+# latte-session [safe|hra|noctalia|klasicke] — relácia LatteOS po prihlásení (spúšťa ju greetd cez wayland-sessions/*.desktop).
+# Bez argumentu LatteOS GOO (Hyprland + engine Goo) — jediná relácia LatteOS v ponuke prihlásenia (6. 10. 2026).
 #
 # Režim berie z /run/latteos/session.env (zapísal latte-boot select pri štarte).
-# NORMAL: Hyprland + Noctalia. Ak Hyprland spadne skôr, než je relácia zdravá (60 s),
+# NORMAL: Hyprland + engine Goo. Ak Hyprland spadne skôr, než je relácia zdravá (60 s),
 #         relácia sa hneď prepne do SAFE; pád sa zaráta do počítadla (latte-boot session-start).
 # SAFE:   labwc + pixman (bez GL/GPU) + Noctalia, záloha foot; ponuka latte-safe.
+# HRA:    gamescope-session-plus steam (Steam Big Picture); striedanie s plochou v tom istom prihlásení
+#         cez latte-hra ($XDG_RUNTIME_DIR/latteos/relacia), ako SteamOS. Iba s grafickou kartou.
+# SAFE a HRA nie sú v ponuke prihlásenia: SAFE príde sám (pády, GRUB › LatteOS SAFE), do hry sa prepína z plochy
+#         (latte-hra). Argumenty ostávajú pre ne a pre testy (setup/f1/session-test.sh).
+# GOO:    LATTE_VARIANT=kvapky → hyprland.lua spustí latte-kvapky start (živá tapeta, engine Goo, Noctalia pre Goo).
+#         Pád → SAFE. Staré mená `kvapky` a `kvapky-engine` znamenajú to isté.
+# KLASICKE: zrušený LatteOS Classic (Hyprland + lišta Noctalie) — kód ostáva, v ponuke nie je.
 set -u
 
 share=/usr/share/latteos
@@ -27,21 +35,55 @@ if [ -r "$ucfg/locale" ]; then set -a; . "$ucfg/locale"; set +a; fi
 mkdir -p "$HOME/.local/share/flatpak/exports/share/applications" 2>/dev/null
 # jednotné okenné tlačidlá aj v aplikáciách s vlastnou hlavičkou (GTK, libadwaita, Firefox): – □ ✕ vpravo
 gsettings set org.gnome.desktop.wm.preferences button-layout "appmenu:minimize,maximize,close" 2>/dev/null || true
+# stupeň zvolený používateľom (šálka › Stupeň výkonu → ~/.config/latteos/tier) platí pre celú reláciu:
+# Hyprland ho číta sám (latte/mode.lua), shell a aplikácie LatteOS cez LATTE_TIER
+if [ "$LATTE_MODE" = normal ] && [ -r "$ucfg/tier" ]; then
+    forced="$(tr -dc 'a-z' < "$ucfg/tier")"
+    case "$forced" in plny|standard|usporny|minimalny|softver) LATTE_TIER="$forced" ;; esac
+fi
 chosen_safe=0
 [ "${1:-}" = safe ] && { LATTE_MODE=safe; chosen_safe=1; }
+next=desktop
+[ "${1:-}" = hra ] && next=hra
+# LatteOS GOO je predvolená a jediná plocha LatteOS: scéna jednotného enginu Goo (session/goo, session/goo/README.md)
+LATTE_VARIANT=kvapky
+[ "${1:-}" = klasicke ] && LATTE_VARIANT=klasicke
+# NOCTALIA (čistá): Hyprland + Noctalia s ich predvolenými nastaveniami, bez úprav LatteOS (hypr/noctalia.lua)
+[ "${1:-}" = noctalia ] && LATTE_VARIANT=noctalia
+[ "$LATTE_VARIANT" = kvapky ] && export LATTE_KVAPKY_SCENE="$share/goo/goo.plm" LATTE_GOO_DIR="$share/goo"
+export LATTE_VARIANT
+# príznak Kvapiek (latte-kvapky skusit) patrí iba tejto relácii: XDG_RUNTIME_DIR pri „linger“ (Sunshine pred
+# prihlásením) prežije odhlásenie a klasický LatteOS by sa inak spustil ako Kvapky
+[ "$LATTE_VARIANT" = kvapky ] || rm -f "$XDG_RUNTIME_DIR/latteos/kvapky"
+flag="$XDG_RUNTIME_DIR/latteos/relacia"
+mkdir -p "$(dirname "$flag")"; rm -f "$flag"
 export LATTE_MODE LATTE_RENDERER LATTE_TIER
 
 export XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=latteos
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-logind}"   # z greetd seat cez logind; testy zo SSH: seatd
 export QT_QPA_PLATFORM=wayland GDK_BACKEND=wayland,x11 MOZ_ENABLE_WAYLAND=1
 
-# shell Noctalia: vzhľad LatteOS (téma Latte, ostrovy lišty), ak si používateľ nespravil vlastný
-# ~/.config/noctalia/config.toml. Zmeny z Nastavení ukladá Noctalia do ~/.local/state/noctalia.
-if [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/noctalia/config.toml" ]; then
-    export NOCTALIA_CONFIG_HOME="$share"
+# shell Noctalia: LatteOS (klasický aj Kvapky) má VLASTNÉ priečinky, pôvodná Noctalia ostáva pôvodná
+# (30. 9.: relácia „Noctalia (čistá)“ si do spoločného ~/.local/state/noctalia zapísala lištu a farby a tie
+# prebili LatteOS). Konfigurácia: ~/.config/latteos/noctalia/config.toml, ak si ju používateľ spravil, inak
+# vzhľad LatteOS zo systému; zmeny z Nastavení: ~/.local/state/latteos/noctalia/settings.toml.
+# Relácia „Noctalia (čistá)“ nedostane nič — Noctalia v nej použije svoje predvolené ~/.config a ~/.local/state.
+unset NOCTALIA_CONFIG_HOME NOCTALIA_STATE_HOME
+if [ "$LATTE_VARIANT" != noctalia ]; then
+    if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/noctalia/config.toml" ]; then
+        export NOCTALIA_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/latteos"
+    else
+        export NOCTALIA_CONFIG_HOME="$share"
+    fi
+    export NOCTALIA_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/latteos"
+    nstate="$NOCTALIA_STATE_HOME/noctalia"
+    # Kvapky majú vlastný stav (latte-kvapky ho pri prvom štarte skopíruje z klasického)
+    [ "$LATTE_VARIANT" = kvapky ] && export NOCTALIA_STATE_HOME="$NOCTALIA_STATE_HOME/kvapky"
+    # prvý štart po oddelení: nastavenia LatteOS zo spoločného priečinka (ak nejaké sú) sa skopírujú
+    old="${XDG_STATE_HOME:-$HOME/.local/state}/noctalia/settings.toml"
+    [ -e "$nstate/settings.toml" ] || { [ -f "$old" ] && mkdir -p "$nstate" && cp "$old" "$nstate/settings.toml"; }
+    [ -e "$nstate/.setup-complete" ] || { mkdir -p "$nstate" && touch "$nstate/.setup-complete"; }  # bez uvítacieho sprievodcu Noctalie
 fi
-nstate="${XDG_STATE_HOME:-$HOME/.local/state}/noctalia"
-[ -e "$nstate/.setup-complete" ] || { mkdir -p "$nstate" && touch "$nstate/.setup-complete"; }  # bez uvítacieho sprievodcu Noctalie
 
 run_safe() {
     echo "SAFE: labwc + pixman (dôvod: ${1:-režim SAFE})"
@@ -68,10 +110,11 @@ export XDG_CURRENT_DESKTOP=Hyprland
 # Lua modul LatteOS (F2); starý hyprlang súbor ostáva ako záloha
 hconf="$share/hypr/hyprland.lua"
 [ -f "$hconf" ] || hconf="$share/hypr/hyprland.conf"
+[ "$LATTE_VARIANT" = noctalia ] && [ -f "$share/hypr/noctalia.lua" ] && hconf="$share/hypr/noctalia.lua"
 # strážcom je latte-session (pád → SAFE), nie start-hyprland: ten po páde reštartuje Hyprland
 # bez -c (vygeneruje cudziu konfiguráciu) a zakryje pád. LATTE_HYPRLAND=false simuluje pád (test).
 # Pád PO 60 s (relácia už bola zdravá): Hyprland sa spustí znova, najviac 3× za 10 minút; potom SAFE.
-# Dôvod: sporadické pády llvmpipe vo VM (setup/f1/RESULTS.md) nemajú vracať používateľa k prihláseniu.
+# Dôvod: sporadické pády llvmpipe vo VM (docs_zaloha/2026-09-23-f1-merania-vm.md) nemajú vracať používateľa k prihláseniu.
 # záznam pádu pre obrazovku prihlásenia (vývojárska verzia ukazuje prvý log z posledného pádu):
 # /var/lib/latteos/greeter/last-crash.log — skupina latte smie zapisovať, greeter (xdm_t) čítať
 crash_report() {   # $1 rc, $2 trvanie v s, $3 čas štartu (epoch)
@@ -101,18 +144,85 @@ crash_report() {   # $1 rc, $2 trvanie v s, $3 čas štartu (epoch)
     chmod 0664 "$out" 2>/dev/null
 }
 
+# herná relácia (hotový gamescope-session-plus); vráti sa na plochu pri „Prepnúť na desktop“ aj pri páde,
+# riadne vypnutie Steamu (Vypnúť / Odhlásiť v Steame) ukončí prihlásenie
+# systemd používateľa žije pri „linger“ (Sunshine pred prihlásením) od štartu PC, dlhšie než relácia: premenné
+# grafickej relácie (WAYLAND_DISPLAY…) by ostali z predošlej. Herná relácia (gamescope ako služba) ich zdedila,
+# myslela si, že beží v okne inej plochy, a hneď skončila (30. 9.). Čistí sa na začiatku aj po konci relácie.
+clean_env() {
+    systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP \
+        XDG_SESSION_DESKTOP XDG_SESSION_ID XDG_SESSION_TYPE LATTE_VARIANT 2>/dev/null || true
+}
+clean_env
+
+# profil prostredia (latte-profil): zdieľané nastavenia (GTK, dconf, predvolené aplikácie, kurzor) má každé prostredie
+# svoje — LatteOS (klasický aj Kvapky) nepokazí iné prostredie (napr. Plasmu) a ono nepokazí LatteOS. SAFE profily
+# neprehadzuje; značka po nej ostane a ďalší vstup „cudzie“ nastavenia nepoškodí.
+profil=latteos
+[ "$LATTE_VARIANT" = noctalia ] && profil=noctalia
+latte-profil vstup "$profil"
+# jeden dokument profilu účtu (~/.config/latteos/<účet>@gooconfig.json): prinesený alebo ručne upravený sa pred
+# štartom plochy rozloží do nastavení, inak sa doplní o to, čo sa zmenilo
+[ "$LATTE_VARIANT" = kvapky ] && latte-gooconfig prihlasenie
+leave() { latte-profil odchod "$profil"; exit 0; }
+
+run_game() {
+    local why rc t0
+    if ! why="$(latte-hra stav)"; then echo "HRA nedostupná: $why → plocha"; return 0; fi
+    echo "HRA: gamescope-session-plus steam"
+    rm -f "$flag"; t0=$(date +%s)
+    ( unset XDG_CURRENT_DESKTOP; exec gamescope-session-plus steam )
+    rc=$?
+    echo "herná relácia skončila: rc=$rc po $(( $(date +%s) - t0 )) s, ďalej: $(cat "$flag" 2>/dev/null || echo koniec)"
+    if [ "$(cat "$flag" 2>/dev/null)" = desktop ] || [ $rc -ne 0 ]; then rm -f "$flag"; return 0; fi
+    # skončila hneď (gamescope sa nespustil, aj keď hlási 0): plocha, nie návrat k prihláseniu
+    if [ $(( $(date +%s) - t0 )) -lt 15 ]; then echo "herná relácia sa nespustila → plocha"; return 0; fi
+    leave
+}
+
+exit_crash() {   # $1 PID: coredump s pádom v upratovaní na konci procesu (systemd-coredump ho zapíše o chvíľu)
+    local i bt
+    # (30. 9.) aj pád v CCompositor::cleanup (upratovanie okien pri odhlásení) — rovnaká trieda chyby
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        bt="$(coredumpctl info "$1" --no-pager 2>/dev/null)"
+        if [ -n "$bt" ]; then grep -qE "_dl_fini|__cxa_finalize|CCompositor7cleanup" <<<"$bt"; return; fi
+        sleep 0.5
+    done
+    return 1
+}
+
+# bez fyzického monitora (vzdialený prístup cez Sunshine/Moonlight, virtuálna obrazovka LATTE-VIRT): prihlasovacia
+# obrazovka by sa nemala kde ukázať a Sunshine beží iba v relácii — odhlásenie by odrezalo prístup až do reštartu PC
+headless() {
+    local s
+    for s in /sys/class/drm/card*-*/status; do [ "$(cat "$s" 2>/dev/null)" = connected ] && return 1; done
+    return 0
+}
+
 restarts=()
 while true; do
+    if [ "$next" = hra ]; then run_game; next=desktop; export XDG_CURRENT_DESKTOP=Hyprland; fi
     t0=$(date +%s)
-    "${LATTE_HYPRLAND:-Hyprland}" -c "$hconf"
+    "${LATTE_HYPRLAND:-Hyprland}" -c "$hconf" &
+    hpid=$!
+    wait $hpid
     rc=$?
     dt=$(( $(date +%s) - t0 ))
     echo "Hyprland skončil: rc=$rc po ${dt}s"
+    # aquamarine 0.15 padá pri UKONČENÍ Hyprlandu (github.com/hyprwm/aquamarine/issues/383, otvorené 29. 9. 2026):
+    # SIGSEGV v deštruktoroch (_dl_fini → CDRMBackend::flushAsyncCommitEvents). Odhlásenie ani prepnutie na hru
+    # preto nie je pád relácie — rozpozná sa podľa backtrace v coredumpe, alebo podľa žiadosti latte-hra.
+    if [ $rc -eq 139 ] && { [ -s "$flag" ] || exit_crash $hpid; }; then
+        echo "pád až pri ukončení (aquamarine #383) → berie sa ako riadne ukončenie"; rc=0
+    fi
     systemctl --user stop latte-session.target 2>/dev/null     # portály a služby relácie končia s Hyprlandom
+    clean_env
 
     if [ $rc -eq 0 ]; then
         latte-boot ok >/dev/null     # riadne odhlásenie nie je pád
-        exit 0
+        if [ "$(cat "$flag" 2>/dev/null)" = hra ]; then rm -f "$flag"; next=hra; continue; fi   # latte-hra
+        if headless; then echo "odhlásenie bez monitora → nová relácia (inak by sa vzdialene nedalo pripojiť)"; continue; fi
+        leave
     fi
     crash_report "$rc" "$dt" "$t0"
     if [ $dt -lt 60 ]; then

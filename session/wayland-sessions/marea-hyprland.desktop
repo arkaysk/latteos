@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Marea (Hyprland)
+Name[sk]=Marea (Hyprland)
+Comment=The original Marea by k4ditano on Hyprland, for experiments — kept apart from LatteOS
+Comment[sk]=Pôvodná Marea od k4ditano na Hyprlande — na pokusy, oddelená od LatteOS
+Exec=/usr/bin/latte-marea hyprland
+Type=Application
+DesktopNames=Hyprland

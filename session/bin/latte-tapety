@@ -6,7 +6,8 @@
 
   latte-tapety nastav SÚBOR [--vystup OUT|*] [--mierka fit|fill|stretch]   video (mpvpaper, iba s GPU) alebo obrázok
                                                     (obrázok = natívna tapeta Noctalie, funguje aj bez GPU)
-  latte-tapety obnov                     pri štarte relácie: posledné tapety na všetkých obrazovkách
+  latte-tapety obnov [--bez-shellu]      pri štarte relácie: posledné tapety na všetkých obrazovkách; bez shellu
+                                                    (latte-kvapky) aj statický obrázok cez mpvpaper
   latte-tapety dalsia | predosla [--vystup OUT]     ďalšia / predošlá z knižnice (ako `aura next/prev`)
   latte-tapety pauza | pozastav | pokracuj          prepnúť / zastaviť / pustiť (0 % CPU a GPU)
   latte-tapety stop [--vystup OUT]                  vypnúť živú tapetu (ostane statická tapeta Noctalie)
@@ -554,6 +555,18 @@ def main(a):
         for out, v in c["vystupy"].items():
             if os.path.isfile(v.get("subor", "")):
                 start(out, v["subor"], v.get("mierka", "fill"), c)
+        live = [o for o, v in c["vystupy"].items() if os.path.isfile(v.get("subor", ""))]
+        if "--bez-shellu" in a:
+            # plocha bez Noctalie (latte-kvapky): statický obrázok kreslí mpvpaper (pauza = 0 % CPU)
+            if not live:
+                last = [p for p in (c.get("posledna") or {}).values() if os.path.isfile(p)]
+                path = (last or ["/usr/share/backgrounds/latteos/latteos-wallpaper1.jpg"])[0]
+                start("*", path, "fill", c)
+        else:
+            # späť so shellom: statický obrázok z mpvpaperu ustúpi natívnej tapete Noctalie
+            for o in running_outputs():
+                if o not in live:
+                    stop(o)
         if c.get("bateria") and on_battery():
             set_pause(True)
         if ((c.get("rotacia") or c.get("bateria")) and c["vystupy"] and gpu_ok()) or (c.get("rotacia") and c.get("typ") == "prezentacia"):

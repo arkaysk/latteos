@@ -1,0 +1,10 @@
+#!/bin/sh
+# latte-goo-greeter — scéna prihlásenia LatteOS GOO vo všeobecnej relácii (LATTEOS-GOO.md §6.2). Spúšťa ju
+# latte-greeter (greeter = "goo") vnútri labwc pod účtom prihlasovača; heslo overí greetd cez latte-greetd.
+# Scéna je na VŠETKÝCH monitoroch (6. 10.: jeden môže byť virtuálny — na jedinom vybranom by prihlásenie nemuselo byť
+# vidieť): kópie majú spoločný stav, takže písanie aj animácia sú na všetkých rovnaké a každá sa rozloží podľa
+# svojho monitora (logika nepočíta v pixeloch).
+cd /usr/share/latteos/goo || { labwc --exit; exit 1; }
+LATTE_LOGIN=greetd pleamar --scene login.plm --no-hud > "${XDG_DATA_HOME:-/tmp}/login.log" 2>&1
+# scéna skončila (latte-greetd koniec ukončí labwc sám; sem sa dôjde pri páde scény) → koniec všeobecnej relácie
+labwc --exit

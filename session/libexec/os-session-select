@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# /usr/libexec/os-session-select — háčik OS pre gamescope-session (volá ho steamos-session-select, keď v Steame
+# stlačíš Prepnúť na desktop). Bazzite tu volá steamosctl; LatteOS prepína v rámci latte-session (latte-hra).
+case "${1:-gamescope}" in
+    gamescope) exec latte-hra hra ;;
+    *)         exec latte-hra desktop ;;   # plasma, plasma-wayland, *-persistent, desktop…
+esac

@@ -5,9 +5,12 @@ Poskytovatelia (~/.config/latteos/ai.toml, píšu ho Nastavenia › Softvér ›
   lokalne  Ollama na tomto PC (http://127.0.0.1:11434)
   domaci   domáci server s OpenAI-kompatibilným API (LM Studio, llama.cpp, vLLM, Ollama);
            voliteľne cez SSH tunel (ssh = "pouzivatel@server"), ak server nie je otvorený do siete
-  cloud    veľké AI: anthropic | openai | gemini | mistral (kľúč v ~/.config/latteos/ai-keys, 0600)
-  web      prihlásenie v prehliadači ako widget v mobile (web = claude | chatgpt | perplexity | copilot):
-           otázka sa otvorí na stránke AI s tvojím prihlásením, bez API kľúča
+  cloud    veľké AI cez API kľúč: anthropic | openai | gemini | deepseek | mistral | openrouter
+           (kľúč v ~/.config/latteos/ai-keys, 0600)
+  predplatne  tvoje predplatné (Claude Pro/Max, ChatGPT Plus, Google účet, GitHub Copilot) bez API kľúča —
+           ako widgety v mobile a rozšírenia vo VS Code: cez oficiálny príkazový nástroj služby, do ktorého sa
+           raz prihlásiš (predplatne = claude | codex | gemini | copilot); odpoveď ide do bublín, nie do prehliadača
+  web      prihlásenie v prehliadači (web = claude | chatgpt | perplexity | copilot): otázka sa otvorí na stránke AI
   ziadna   Bez AI: LatteOS neponúka AI nikde (Text Bar bez režimu AI, panel Super+I vypnutý)
 
   latte-ai status            poskytovateľ, model, dostupnosť (jeden riadok key=value na riadok)
@@ -15,6 +18,24 @@ Poskytovatelia (~/.config/latteos/ai.toml, píšu ho Nastavenia › Softvér ›
   latte-ai ask OTÁZKA        odpoveď na stdout (bez <think> blokov); pri „web“ otvorí stránku AI
   latte-ai open [OTÁZKA]     otvorí webový chat zvolenej AI (aj s otázkou) v prehliadači
   latte-ai chat SÚBOR.json   rozhovor: [{"role":"user"|"assistant","content":…}, …] → ďalšia odpoveď na stdout
+  latte-ai chat 'JSON'       to isté priamo v argumente (spúšťač plochy Kvapky, logika nevie zapisovať súbory);
+                             chyba ide tiež na stdout, aby ju spúšťač ukázal v bubline. Správa môže mať
+                             "files": [cesty] — text sa vloží, obrázky a PDF idú ako prílohy (ak ich služba berie)
+  latte-ai usage             spotreba a zostatok (key=value): dnes / mesiac tokenov a otázok podľa tohto PC,
+                             zostatok kreditu (DeepSeek, OpenRouter), limity za minútu z hlavičiek API, cena (Claude CLI)
+  latte-ai local             Ollama na tomto PC ako LM Studio (riadky id<TAB>veľkosť<TAB>načítaný):
+  latte-ai katalog           odporúčané modely na stiahnutie podľa RAM (id<TAB>popis)
+  latte-ai pull MODEL        stiahne model (priebeh po riadkoch „percent text“) · rm MODEL · unload
+  latte-ai sluzby            predplatné: id<TAB>meno<TAB>nainštalované 0/1<TAB>prihlásené 0/1<TAB>čo urobí prihlásenie
+  latte-ai instaluj ID       nainštaluje nástroj služby do domova (bez sudo, bez terminálu), priebeh po riadkoch —
+                             záloha; bežne sú nástroje v systéme od inštalácie LatteOS:
+  latte-ai instaluj-system   (root, inštalátor LatteOS) všetky nástroje predplatných do /usr/local/lib/latteos-ai
+  latte-ai prihlas ID        prihlásenie služby na pozadí: prehliadač s prihlásením (píše sa iba meno a heslo),
+                             terminál sa neotvára · odhlas ID
+  latte-ai priebeh ID        stav inštalácie/prihlásenia pre Nastavenia: state=, url=, code=, line=, log=
+  latte-ai terminal ID       „Zobraziť terminál“: otvorí terminál so záznamom (čo sa deje pod kapotou)
+  latte-ai hlas start|stop   diktovanie: nahrávanie mikrofónu (pw-record); stop vypíše prepis
+                             (whisper.cpp lokálne, inak OpenAI API s kľúčom)
   latte-ai set KĽÚČ HODNOTA  zapíše voľbu do ai.toml (provider, url, model, ssh, cloud, cloud_model)
   latte-ai key SLUŽBA KĽÚČ   uloží API kľúč cloudu
 """
@@ -34,17 +55,49 @@ DEFAULTS = {
     "cloud": "anthropic",
     "cloud_model": "",
     "web": "claude",
+    "predplatne": "claude",
+    "cli_model": "",                              # model predplatného (claude: opus | sonnet | haiku), "" = predvolený
+    "effort": "",                                 # ""=predvolené služby | low | medium | high (premýšľanie modelu)
+    "temperature": "",                            # lokálne/domáci: "" = predvolená modelu
+    "ctx": "",                                    # lokálne: dĺžka kontextu (num_ctx), "" = predvolená
+    "keep_alive": "10m",                          # lokálne: ako dlho ostane model v pamäti po otázke
     "system": ("Si asistent v LatteOS. LatteOS je desktopová Linux distribúcia na Fedore pre bežných ľudí a hráčov: "
                "Hyprland (nekonečná páska okien), shell Noctalia so spodnou lištou z ostrovov, témy Latte, Súbory, "
                "Nastavenia, Monitor, App Manager (Flatpak, RPM, kontrola „Bude to fungovať?“), režimy NORMAL a SAFE. "
                "Odpovedaj stručne a po slovensky, ak sa ťa používateľ pýta po slovensky."),
 }
 CLOUD = {   # predvolené modely a adresy veľkých AI
-    "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-5"),
+    "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-5-5"),
     "openai":    ("https://api.openai.com/v1", "gpt-5-mini"),
     "gemini":    ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash"),
     "mistral":   ("https://api.mistral.ai/v1", "mistral-large-latest"),
+    "deepseek":  ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "openrouter": ("https://openrouter.ai/api/v1", "openrouter/auto"),
 }
+# predplatné cez oficiálny príkazový nástroj služby: (meno, príkaz, inštalácia, prihlásenie)
+# Používateľ nič nepíše do terminálu: Nastavenia › AI › Inštalovať / Prihlásiť sa (latte-ai instaluj / prihlas)
+CLI = {
+    "claude":  ("Claude", "claude", "Nastavenia › AI › Claude › Inštalovať", "Nastavenia › AI › Claude › Prihlásiť sa"),
+    "codex":   ("ChatGPT", "codex", "Nastavenia › AI › ChatGPT › Inštalovať", "Nastavenia › AI › ChatGPT › Prihlásiť sa"),
+    "gemini":  ("Gemini", "gemini", "Nastavenia › AI › Gemini › Inštalovať", "Nastavenia › AI › Gemini › Prihlásiť sa"),
+    "copilot": ("Copilot", "copilot", "Nastavenia › AI › Copilot › Inštalovať", "Nastavenia › AI › Copilot › Prihlásiť sa"),
+}
+# inštalácia: claude oficiálnym skriptom (do ~/.local/bin), ostatné cez npm do vlastného priečinka (bez sudo)
+NPM = {"codex": "@openai/codex", "gemini": "@google/gemini-cli", "copilot": "@github/copilot"}
+NPM_PREFIX = os.path.join(HOME, ".local/share/latteos/ai-nastroje")
+SYS_PREFIX = "/usr/local/lib/latteos-ai"                 # predinštalované pri inštalácii LatteOS (ak AI nie je vypnutá)
+SYS_NPM = {"claude": "@anthropic-ai/claude-code", **NPM}
+# prihlásenie je hotové, keď nástroj uložil svoje prihlasovacie údaje
+CREDS = {"claude": [".claude/.credentials.json"], "codex": [".codex/auth.json"],
+         "gemini": [".gemini/oauth_creds.json", ".gemini/google_accounts.json"], "copilot": [".copilot/config.json"]}
+LOGIN_HINT = {"claude": "otvorí sa prehliadač s prihlásením do Claude",
+              "codex": "otvorí sa prehliadač s prihlásením do ChatGPT",
+              "gemini": "otvorí sa prehliadač s prihlásením do účtu Google",
+              "copilot": "otvorí sa prehliadač GitHubu; vpíšeš doň krátky kód, ktorý ukážu Nastavenia"}
+os.environ["PATH"] = os.pathsep.join([os.path.join(HOME, ".local/bin"), os.path.join(NPM_PREFIX, "bin"),
+                                      os.path.join(SYS_PREFIX, "bin"), os.environ.get("PATH", "")])
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "latteos")
+USAGE = os.path.join(STATE, "ai-usage.json")
 
 
 def load():
@@ -81,12 +134,50 @@ def keys():
     return k
 
 
+LAST_HEADERS = {}
+
+
 def http(url, body=None, headers=None, timeout=8):
     h = {"Content-Type": "application/json"}
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=h), timeout=timeout) as r:
+        LAST_HEADERS.clear()
+        LAST_HEADERS.update({k.lower(): v for k, v in r.headers.items()})
         return json.loads(r.read().decode())
+
+
+# ── spotreba: vlastný záznam tohto PC (služby rátajú inak, toto je odhad podľa odpovedí) ──
+def usage_load():
+    try:
+        with open(USAGE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def usage_add(service, tin, tout, cost=0.0):
+    u = usage_load()
+    day, month = time.strftime("%Y-%m-%d"), time.strftime("%Y-%m")
+    for key in (day, month):
+        e = u.setdefault(service, {}).setdefault(key, {"in": 0, "out": 0, "n": 0, "cost": 0.0})
+        e["in"] += int(tin or 0); e["out"] += int(tout or 0); e["n"] += 1; e["cost"] = round(e["cost"] + float(cost or 0), 4)
+    limits = {k: v for k, v in LAST_HEADERS.items() if "ratelimit" in k and "remaining" in k}
+    if limits:
+        u.setdefault(service, {})["limits"] = limits
+    for k in list(u.get(service, {})):                       # ponechať 40 dní a 13 mesiacov
+        if len(k) == 10 and k < time.strftime("%Y-%m-%d", time.localtime(time.time() - 40 * 86400)):
+            del u[service][k]
+    os.makedirs(STATE, exist_ok=True)
+    tmp = USAGE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(u, f)
+    os.replace(tmp, USAGE)
+
+
+def service_id(c):
+    p = c["provider"]
+    return {"cloud": "api:" + c["cloud"], "predplatne": "cli:" + c["predplatne"]}.get(p, p)
 
 
 def tunnel(c):
@@ -151,7 +242,8 @@ def models(c):
             for m in http(base.rsplit("/v1", 1)[0] + "/api/v0/models", headers=hdr)["data"]:
                 if m.get("type") in ("llm", "vlm"):
                     out.append((m["id"], m.get("state", "")))
-            return out
+            if out:
+                return out
         except Exception:
             pass
     for m in http(base + "/models", headers=hdr)["data"]:
@@ -173,26 +265,437 @@ def pick(c):
     return ""
 
 
+IMG = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def attach(m, kind):
+    """Správa s "files" → obsah pre službu. kind: anthropic | openai | text."""
+    import base64
+    text = str(m.get("content", ""))
+    blocks = []
+    for path in m.get("files") or []:
+        path = os.path.expanduser(path)
+        name, ext = os.path.basename(path), os.path.splitext(path)[1].lower()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            text += "\n\n[príloha %s sa nedá prečítať]" % name
+            continue
+        if kind != "text" and ext in IMG and size < 5_000_000:
+            b64 = base64.b64encode(open(path, "rb").read()).decode()
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": IMG[ext], "data": b64}} if kind == "anthropic"
+                          else {"type": "image_url", "image_url": {"url": "data:%s;base64,%s" % (IMG[ext], b64)}})
+        elif kind == "anthropic" and ext == ".pdf" and size < 30_000_000:
+            b64 = base64.b64encode(open(path, "rb").read()).decode()
+            blocks.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}})
+        else:
+            try:
+                body = open(path, encoding="utf-8").read(200_000)
+                text += "\n\n--- %s ---\n%s" % (name, body)
+            except (UnicodeDecodeError, OSError):
+                text += "\n\n[príloha %s: %s, %d kB — tento typ služba neprečíta]" % (name, ext or "súbor", size // 1024)
+    if not blocks:
+        return text
+    return blocks + [{"type": "text", "text": text}]
+
+
+def ask_cli(c, msgs):
+    """Predplatné cez oficiálny nástroj služby: jedna otázka s prepisom rozhovoru, bez nástrojov a súborov PC."""
+    import tempfile
+    name, exe, install, login = CLI.get(c["predplatne"], CLI["claude"])
+    import shutil
+    if not shutil.which(exe):
+        raise RuntimeError("%s: nástroj „%s“ nie je nainštalovaný.\nInštalácia: %s\nPrihlásenie: %s" % (name, exe, install, login))
+    convo = [m for m in msgs if m["role"] in ("user", "assistant")]
+    if len(convo) > 1:
+        lines = ["Doterajší rozhovor:"] + ["%s: %s" % ("Používateľ" if m["role"] == "user" else "Ty", attach(m, "text")) for m in convo[:-1]]
+        prompt = "\n\n".join(lines) + "\n\nNová otázka: " + attach(convo[-1], "text")
+    else:
+        prompt = attach(convo[-1], "text")
+    model, effort = c["cli_model"], c["effort"]
+    out_file = None
+    if exe == "claude":
+        cmd = ["claude", "-p", prompt, "--output-format", "json", "--append-system-prompt", c["system"]] + (["--model", model] if model else [])
+    elif exe == "codex":
+        out_file = tempfile.NamedTemporaryFile(prefix="latte-ai-", suffix=".txt", delete=False).name
+        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-o", out_file] + (["-m", model] if model else []) \
+              + (["-c", "model_reasoning_effort=" + effort] if effort else []) + [c["system"] + "\n\n" + prompt]
+    elif exe == "gemini":
+        cmd = ["gemini", "-p", c["system"] + "\n\n" + prompt] + (["-m", model] if model else [])
+    else:
+        cmd = ["copilot", "-p", c["system"] + "\n\n" + prompt] + (["--model", model] if model else [])
+    with tempfile.TemporaryDirectory(prefix="latte-ai-") as cwd:     # prázdny priečinok: agent nevidí súbory PC
+        r = subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+    out = r.stdout.strip()
+    if out_file:
+        try:
+            out = open(out_file, encoding="utf-8").read().strip() or out
+        finally:
+            os.unlink(out_file)
+    if r.returncode != 0 and not out:
+        err = (r.stderr.strip().splitlines() or ["kód %d" % r.returncode])[-1]
+        raise RuntimeError("%s neodpovedal: %s\nAk nie si prihlásený: %s" % (name, err, login))
+    tin = tout = 0; cost = 0.0
+    if exe == "claude":
+        try:
+            j = json.loads(out)
+            if j.get("is_error"):
+                raise RuntimeError("%s: %s" % (name, j.get("result") or j.get("subtype")))
+            out, cost = j.get("result", ""), j.get("total_cost_usd") or 0.0
+            u = j.get("usage") or {}
+            tin, tout = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0), u.get("output_tokens", 0)
+        except ValueError:
+            pass
+    usage_add(service_id(c), tin, tout, cost)
+    return out, model or name
+
+
 def ask(c, q, history=None):
+    msgs = history if history else [{"role": "user", "content": q}]
+    msgs = [m for m in msgs if m.get("role") in ("user", "assistant")][-20:]
+    if c["provider"] == "predplatne":
+        text, model = ask_cli(c, msgs)
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip(), model
     base, hdr, _ = endpoint(c)
     model = pick(c)
     if not model:
         raise RuntimeError("Na serveri nie je načítaný žiadny model. Vyber ho v Nastaveniach › AI.")
-    msgs = history if history else [{"role": "user", "content": q}]
-    msgs = [{"role": m["role"], "content": str(m["content"])} for m in msgs if m.get("role") in ("user", "assistant")][-20:]
+    effort = c["effort"] if c["effort"] in ("low", "medium", "high") else ""
+    if c["provider"] == "lokalne":                  # natívne API Ollamy: nastavenia modelu a rýchlosť (tokeny/s)
+        opts = {}
+        if c["temperature"]:
+            opts["temperature"] = float(c["temperature"])
+        if c["ctx"]:
+            opts["num_ctx"] = int(c["ctx"])
+        body = {"model": model, "stream": False, "keep_alive": c["keep_alive"] or "10m", "options": opts,
+                "messages": [{"role": "system", "content": c["system"]}] + [ollama_msg(m) for m in msgs]}
+        if effort:
+            body["think"] = effort != "low"
+        r = http("http://127.0.0.1:11434/api/chat", body, {}, 600)
+        text = (r.get("message") or {}).get("content", "")
+        tps = r.get("eval_count", 0) / max(r.get("eval_duration", 1) / 1e9, 1e-3)
+        LAST_HEADERS.clear()
+        usage_add(service_id(c), r.get("prompt_eval_count", 0), r.get("eval_count", 0))
+        u = usage_load()
+        u.setdefault("lokalne", {})["tps"] = round(tps, 1)      # rýchlosť poslednej odpovede (ako LM Studio)
+        json.dump(u, open(USAGE, "w"))
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip(), model
     if c["provider"] == "cloud" and c["cloud"] == "anthropic":
-        r = http(base + "/messages", {"model": model, "max_tokens": 1024, "system": c["system"], "messages": msgs}, hdr, 120)
-        text = "".join(b.get("text", "") for b in r.get("content", []))
+        body = {"model": model, "max_tokens": 16000, "system": c["system"],
+                "messages": [{"role": m["role"], "content": attach(m, "anthropic")} for m in msgs]}
+        if effort:
+            body["output_config"] = {"effort": effort}
+        r = http(base + "/messages", body, hdr, 300)
+        if r.get("stop_reason") == "refusal":
+            raise RuntimeError("Claude túto otázku odmietol zodpovedať.")
+        text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text")
+        u = r.get("usage") or {}
+        usage_add(service_id(c), u.get("input_tokens", 0), u.get("output_tokens", 0))
     else:
-        r = http(base + "/chat/completions", {"model": model, "messages": [{"role": "system", "content": c["system"]}] + msgs,
-                                              "temperature": 0.4}, hdr, 180)
+        body = {"model": model, "messages": [{"role": "system", "content": c["system"]}]
+                + [{"role": m["role"], "content": attach(m, "openai" if c["provider"] == "cloud" else "text")} for m in msgs]}
+        if effort and c["provider"] == "cloud" and c["cloud"] in ("openai", "gemini", "openrouter"):
+            body["reasoning_effort"] = effort
+        if c["temperature"] and c["provider"] == "domaci":
+            body["temperature"] = float(c["temperature"])
+        r = http(base + "/chat/completions", body, hdr, 300)
         text = r["choices"][0]["message"].get("content") or ""
+        u = r.get("usage") or {}
+        usage_add(service_id(c), u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
     return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip(), model
+
+
+def ollama_msg(m):
+    """správa pre Ollamu: obrázky ako base64 v "images" (modely s videním), text príloh vložený"""
+    import base64
+    imgs = [f for f in (m.get("files") or []) if os.path.splitext(f)[1].lower() in IMG]
+    rest = dict(m, files=[f for f in (m.get("files") or []) if f not in imgs])
+    out = {"role": m["role"], "content": attach(rest, "text")}
+    if imgs:
+        out["images"] = [base64.b64encode(open(os.path.expanduser(f), "rb").read()).decode() for f in imgs]
+    return out
+
+
+# odporúčané modely pre Ollamu: (min. RAM v GB, id, popis) — malé najprv; latte-ai katalog vyberie podľa RAM
+KATALOG = [
+    (4, "llama3.2:3b", "Llama 3.2 3B · rýchly, všeobecný (2 GB)"),
+    (6, "gemma3:4b", "Gemma 3 4B · vidí obrázky (3 GB)"),
+    (6, "qwen3:4b", "Qwen 3 4B · premýšľa, dobrý v slovenčine (2,5 GB)"),
+    (12, "qwen3:8b", "Qwen 3 8B · lepšie odpovede (5 GB)"),
+    (12, "deepseek-r1:8b", "DeepSeek R1 8B · premýšľanie, matematika (5 GB)"),
+    (16, "gemma3:12b", "Gemma 3 12B · vidí obrázky (8 GB)"),
+    (24, "qwen3:14b", "Qwen 3 14B · najlepší pre 32 GB RAM (9 GB)"),
+]
+
+
+def ram_gb():
+    try:
+        return int(re.search(r"MemTotal:\s+(\d+)", open("/proc/meminfo").read()).group(1)) / 1048576
+    except (OSError, AttributeError):
+        return 8
+
+
+def local_list():
+    tags = http("http://127.0.0.1:11434/api/tags").get("models", [])
+    loaded = {m["name"] for m in http("http://127.0.0.1:11434/api/ps").get("models", [])}
+    for m in tags:
+        print("%s\t%.1f GB\t%s" % (m["name"], m.get("size", 0) / 1e9, "1" if m["name"] in loaded else ""))
+
+
+def local_pull(name):
+    """ollama pull s priebehom: riadky „percent text“ pre bublinu spúšťača"""
+    req = urllib.request.Request("http://127.0.0.1:11434/api/pull", data=json.dumps({"model": name}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    last = -1
+    with urllib.request.urlopen(req, timeout=3600) as r:
+        for line in r:
+            j = json.loads(line or b"{}")
+            if j.get("error"):
+                raise RuntimeError(j["error"])
+            pct = int(100 * j["completed"] / j["total"]) if j.get("total") and j.get("completed") else -1
+            if pct != last or "status" in j and pct < 0:
+                print("%d %s" % (max(pct, 0), j.get("status", "")), flush=True)
+                last = pct
+
+
+def logged_in(sid):
+    for f in CREDS.get(sid, []):
+        p = os.path.join(HOME, f)
+        if os.path.exists(p) and (sid != "copilot" or "logged_in_users" in open(p, errors="replace").read()):
+            return True
+    return False
+
+
+def services():
+    import shutil
+    for sid, (name, exe, _i, _l) in CLI.items():
+        print("%s\t%s\t%d\t%d\t%s" % (sid, name, bool(shutil.which(exe)), logged_in(sid), LOGIN_HINT[sid]))
+
+
+def logfile(sid):
+    return os.path.join(RUN, "latte-ai-%s.log" % sid)
+
+
+def progress(sid, **kv):
+    """stav pre Nastavenia (latte-ai priebeh ID)"""
+    p = os.path.join(RUN, "latte-ai-%s.json" % sid)
+    try:
+        st = json.load(open(p))
+    except (OSError, ValueError):
+        st = {}
+    st.update(kv)
+    json.dump(st, open(p, "w"))
+
+
+def install(sid):
+    """inštalácia nástroja služby bez sudo; výstup do záznamu (Zobraziť terminál), posledný riadok do Nastavení"""
+    import shutil
+    name = CLI[sid][0]
+    if sid == "claude":
+        cmd = ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
+    else:
+        if not shutil.which("npm"):
+            progress(sid, state="error", line="chýba Node.js (npm)")
+            raise RuntimeError("chýba Node.js (npm) — v LatteOS je v základe; doinštaluj balík nodejs-npm")
+        os.makedirs(NPM_PREFIX, exist_ok=True)
+        cmd = ["npm", "install", "--global", "--prefix", NPM_PREFIX, "--no-fund", "--no-audit", NPM[sid]]
+    progress(sid, state="installing", line="Sťahujem %s…" % name, url="", code="")
+    with open(logfile(sid), "a") as log:
+        log.write("\n$ %s\n" % " ".join(cmd)); log.flush()
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in p.stdout:
+            log.write(line); log.flush()
+            if line.strip():
+                progress(sid, line=strip_ansi(line.strip())[:100])
+        rc = p.wait()
+    if rc != 0 or not shutil.which(CLI[sid][1]):
+        progress(sid, state="error", line="inštalácia zlyhala (kód %d) — Zobraziť terminál ukáže prečo" % rc)
+        raise RuntimeError("inštalácia %s zlyhala (kód %d)" % (name, rc))
+    progress(sid, state="installed", line="%s je nainštalovaný" % name)
+    print("hotovo: %s je nainštalovaný" % name)
+
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\r")
+
+
+def strip_ansi(t):
+    return ANSI.sub("", t)
+
+
+# odpovede na úvodné otázky nástrojov (prvé spustenie): (vzor v texte, čo poslať) — každá raz
+LOGIN_ANSWERS = {
+    "claude": [(r"(?i)choose the text style|dark mode", "\r"), (r"(?i)select login method|claude account with subscription", "\r"),
+               (r"(?i)press enter to (continue|retry)|login successful", "\r")],
+    "gemini": [(r"(?i)login with google", "\r"), (r"(?i)select theme", "\r")],
+    "copilot": [(r"(?i)(^|\s)>\s*$|type @ to mention|enter a prompt", "/login\r"), (r"(?i)github\.com\b.*\n.*ghe|what account do you want", "\r")],
+    "codex": [],
+}
+
+
+def login_worker(sid):
+    """beží na pozadí v pseudoterminále: odpovedá na úvodné otázky, otvorí prehliadač, vytiahne kód,
+    všetko zapisuje do záznamu; skončí po uložení prihlásenia (alebo po 10 min)"""
+    import pty, select, signal
+    exe = CLI[sid][1]
+    argv = {"claude": [exe, "/login"], "codex": [exe, "login"], "gemini": [exe], "copilot": [exe]}[sid]
+    if sid == "claude" and subprocess.run([exe, "auth", "--help"], capture_output=True, timeout=10).returncode == 0:
+        argv = [exe, "auth", "login"]
+    progress(sid, state="login", line="Otváram prihlásenie…", url="", code="")
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.execvp(argv[0], argv)
+    answers = list(LOGIN_ANSWERS.get(sid, []))
+    seen_url, buf, start = "", "", time.time()
+    with open(logfile(sid), "a") as log:
+        log.write("\n$ %s\n" % " ".join(argv)); log.flush()
+        while time.time() - start < 600:
+            if logged_in(sid):
+                progress(sid, state="done", line="Prihlásené", code="")
+                break
+            r, _, _ = select.select([fd], [], [], 1.0)
+            if not r:
+                continue
+            try:
+                data = os.read(fd, 4096).decode(errors="replace")
+            except OSError:
+                break
+            log.write(data); log.flush()
+            buf = (buf + strip_ansi(data))[-4000:]
+            for i, (pat, ans) in enumerate(answers):
+                if re.search(pat, buf):
+                    time.sleep(0.4)
+                    os.write(fd, ans.encode())
+                    answers.pop(i); buf = ""
+                    break
+            m = re.search(r"https://\S+", buf)
+            if m and m.group(0) != seen_url and ("oauth" in m.group(0) or "login" in m.group(0) or "device" in m.group(0) or "auth" in m.group(0)):
+                seen_url = m.group(0).rstrip(".,)")
+                progress(sid, url=seen_url, line="Prihlás sa v prehliadači (meno a heslo)")
+                try:
+                    subprocess.Popen(["xdg-open", seen_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                except OSError:
+                    pass
+            c = re.search(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b", buf)
+            if c:
+                progress(sid, code=c.group(1), line="Do prehliadača vpíš kód " + c.group(1))
+        else:
+            progress(sid, state="error", line="Prihlásenie nedobehlo — Zobraziť terminál ukáže prečo")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def login(sid):
+    """spustí prihlásenie na pozadí (žiadny terminál); Nastavenia sledujú latte-ai priebeh"""
+    import shutil
+    if not shutil.which(CLI[sid][1]):
+        raise RuntimeError("%s ešte nie je nainštalovaný" % CLI[sid][0])
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "_prihlas", sid], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    print(LOGIN_HINT[sid])
+
+
+def install_system():
+    """inštalátor LatteOS (root): nástroje všetkých predplatných naraz, aby si používateľ pri výbere služby
+    iba prihlásil účet alebo zadal kľúč API; odkazy v /usr/local/bin"""
+    os.makedirs(SYS_PREFIX, exist_ok=True)
+    r = subprocess.run(["npm", "install", "--global", "--prefix", SYS_PREFIX, "--no-fund", "--no-audit"] + list(SYS_NPM.values()))
+    bindir = os.path.join(SYS_PREFIX, "bin")
+    for sid, (_n, exe, _i, _l) in CLI.items():
+        src, dst = os.path.join(bindir, exe), os.path.join("/usr/local/bin", exe)
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.symlink(src, dst)
+        print("%s: %s" % (exe, "pripravené" if os.path.exists(src) else "CHÝBA"))
+    if r.returncode != 0:
+        raise RuntimeError("npm install skončil s kódom %d" % r.returncode)
+
+
+def logout(sid):
+    for f in CREDS.get(sid, []):
+        try:
+            os.unlink(os.path.join(HOME, f))
+        except OSError:
+            pass
+
+
+def usage_report(c):
+    """key=value: spotreba podľa tohto PC a zostatok, ak ho služba povie."""
+    sid = service_id(c)
+    e = usage_load().get(sid, {})
+    day, month = e.get(time.strftime("%Y-%m-%d"), {}), e.get(time.strftime("%Y-%m"), {})
+    print("service=" + sid)
+    for k, d in (("today", day), ("month", month)):
+        print("%s_in=%d\n%s_out=%d\n%s_n=%d" % (k, d.get("in", 0), k, d.get("out", 0), k, d.get("n", 0)))
+        if d.get("cost"):
+            print("%s_cost_usd=%.4f" % (k, d["cost"]))
+    if e.get("tps"):
+        print("tps=%s" % e["tps"])
+    for k, v in (e.get("limits") or {}).items():
+        print("limit_%s=%s" % (re.sub(r"[^a-z0-9]+", "_", k), v))
+    key = keys().get(c["cloud"], "")
+    try:
+        if c["provider"] == "cloud" and c["cloud"] == "deepseek" and key:
+            b = http("https://api.deepseek.com/user/balance", headers={"Authorization": "Bearer " + key})["balance_infos"][0]
+            print("balance=%s %s" % (b["total_balance"], b["currency"]))
+        elif c["provider"] == "cloud" and c["cloud"] == "openrouter" and key:
+            d = http("https://openrouter.ai/api/v1/key", headers={"Authorization": "Bearer " + key})["data"]
+            print("used_usd=%s" % d.get("usage"))
+            if d.get("limit") is not None:
+                print("balance=%s USD" % d.get("limit_remaining"))
+    except Exception as ex:
+        print("balance_error=" + str(getattr(ex, "reason", ex)).replace("\n", " "))
+    note = {"cli:claude": "limity predplatného: v termináli claude › /usage",
+            "cli:codex": "limity predplatného: v termináli codex › /status",
+            "cli:gemini": "bezplatný účet Google má denný limit otázok",
+            "api:anthropic": "zostatok kreditu: console.anthropic.com › Billing",
+            "api:openai": "zostatok kreditu: platform.openai.com › Usage",
+            "lokalne": "lokálny model: bez limitu", "domaci": "domáci server: bez limitu"}.get(sid)
+    if note:
+        print("note=" + note)
+
+
+def voice(arg):
+    """Diktovanie: start nahráva mikrofón na pozadí, stop nahrávanie ukončí a vypíše prepis."""
+    wav, pidf = os.path.join(RUN, "latte-ai-hlas.wav"), os.path.join(RUN, "latte-ai-hlas.pid")
+    if arg == "start":
+        p = subprocess.Popen(["pw-record", "--rate", "16000", "--channels", "1", wav],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        open(pidf, "w").write(str(p.pid))
+        print("nahrávam")
+        return
+    try:
+        os.kill(int(open(pidf).read()), 15)
+        time.sleep(0.3)
+        os.unlink(pidf)
+    except (OSError, ValueError):
+        pass
+    if not os.path.exists(wav):
+        raise RuntimeError("nič nie je nahraté")
+    model = os.path.expanduser("~/.local/share/latteos/whisper/ggml-base.bin")
+    import shutil
+    try:
+        if shutil.which("whisper-cli") and os.path.exists(model):
+            r = subprocess.run(["whisper-cli", "-m", model, "-l", "auto", "-nt", "-np", "-f", wav], capture_output=True, text=True, timeout=120)
+            print(r.stdout.strip())
+        elif keys().get("openai"):
+            r = subprocess.run(["curl", "-s", "https://api.openai.com/v1/audio/transcriptions", "-H", "Authorization: Bearer " + keys()["openai"],
+                                "-F", "model=gpt-4o-mini-transcribe", "-F", "file=@" + wav], capture_output=True, text=True, timeout=120)
+            print(json.loads(r.stdout).get("text", "").strip())
+        else:
+            raise RuntimeError("prepis reči: nainštaluj whisper.cpp (whisper-cli) a model do ~/.local/share/latteos/whisper/ggml-base.bin, "
+                               "alebo pridaj OpenAI kľúč (latte-ai key openai …)")
+    finally:
+        os.unlink(wav)
 
 
 def main(a):
     c = load()
     cmd = a[0] if a else "status"
+    inline = cmd == "chat" and len(a) == 2 and a[1].lstrip().startswith("[")
+    if inline:
+        sys.stderr = sys.stdout
     try:
         if cmd == "status" and c["provider"] in ("web", "ziadna"):
             print("provider=" + c["provider"])
@@ -201,8 +704,23 @@ def main(a):
             else:
                 print("target=" + WEB.get(c["web"], WEB["claude"])[0] + " v prehliadači (tvoje prihlásenie)")
                 print("model=" + WEB.get(c["web"], WEB["claude"])[0]); print("ok=1"); print("web=1")
+        elif cmd == "status" and c["provider"] == "predplatne":
+            import shutil
+            name, exe, how_install, how_login = CLI.get(c["predplatne"], CLI["claude"])
+            print("provider=predplatne")
+            print("cli=" + c["predplatne"])
+            print("target=" + name + " (predplatné)")
+            print("model=" + (c["cli_model"] or name))
+            print("effort=" + c["effort"])
+            if not shutil.which(exe):
+                print("ok=0"); print("setup=install"); print("error=%s treba raz nainštalovať: %s" % (name, how_install))
+            elif not logged_in(c["predplatne"]):
+                print("ok=0"); print("setup=login"); print("error=Na %s sa treba raz prihlásiť: %s" % (name, how_login))
+            else:
+                print("ok=1")
         elif cmd == "status":
             print("provider=" + c["provider"])
+            print("effort=" + c["effort"])
             print("target=" + ({"lokalne": "Ollama (tento PC)", "cloud": c["cloud"]}.get(c["provider"]) or c["url"] + (" cez ssh " + c["ssh"] if c["ssh"] else "")))
             try:
                 print("model=" + (pick(c) or ""))
@@ -211,9 +729,49 @@ def main(a):
                 print("model=")
                 print("ok=0")
                 print("error=" + str(getattr(e, "reason", e)).replace("\n", " "))
+        elif cmd == "models" and c["provider"] == "predplatne":
+            # iba stále aliasy; ostatné služby: prázdne = model, ktorý má predplatné predvolený
+            for m in {"claude": ["opus", "sonnet", "haiku"]}.get(c["predplatne"], []):
+                print(m + "\t")
         elif cmd == "models":
             for m, s in models(c):
                 print(m + "\t" + s)
+        elif cmd == "usage":
+            usage_report(c)
+        elif cmd == "local":
+            local_list()
+        elif cmd == "sluzby":
+            services()
+        elif cmd == "instaluj-system":
+            install_system()
+        elif cmd in ("instaluj", "prihlas", "odhlas", "_prihlas") and len(a) == 2 and a[1] in CLI:
+            {"instaluj": install, "prihlas": login, "odhlas": logout, "_prihlas": login_worker}[cmd](a[1])
+        elif cmd == "priebeh" and len(a) == 2 and a[1] in CLI:
+            try:
+                st = json.load(open(os.path.join(RUN, "latte-ai-%s.json" % a[1])))
+            except (OSError, ValueError):
+                st = {}
+            for k in ("state", "line", "url", "code"):
+                print("%s=%s" % (k, str(st.get(k, "")).replace("\n", " ")))
+            print("log=" + logfile(a[1]))
+        elif cmd == "terminal" and len(a) == 2 and a[1] in CLI:
+            open(logfile(a[1]), "a").close()            # pod kapotou: živý záznam inštalácie a prihlásenia
+            subprocess.Popen(["latte-terminal", "tail", "-n", "200", "-f", logfile(a[1])], start_new_session=True)
+        elif cmd == "katalog":
+            have = ram_gb()
+            for need, mid, desc in KATALOG:
+                if need <= have + 0.5:
+                    print(mid + "\t" + desc)
+        elif cmd == "pull" and len(a) == 2:
+            local_pull(a[1])
+        elif cmd == "rm" and len(a) == 2:
+            req = urllib.request.Request("http://127.0.0.1:11434/api/delete", data=json.dumps({"model": a[1]}).encode(), method="DELETE")
+            urllib.request.urlopen(req, timeout=30).read()
+        elif cmd == "unload":
+            for m in http("http://127.0.0.1:11434/api/ps").get("models", []):
+                http("http://127.0.0.1:11434/api/generate", {"model": m["name"], "keep_alive": 0}, {}, 30)
+        elif cmd == "hlas" and len(a) == 2 and a[1] in ("start", "stop"):
+            voice(a[1])
         elif cmd == "open" or (cmd == "ask" and c["provider"] == "web"):
             if c["provider"] == "ziadna":
                 raise RuntimeError("AI je vypnutá (Bez AI)")
@@ -226,8 +784,11 @@ def main(a):
         elif cmd == "chat" and len(a) == 2 and c["provider"] in ("web", "ziadna"):
             raise RuntimeError("AI je vypnutá (Bez AI)" if c["provider"] == "ziadna" else "Webová AI odpovedá v prehliadači: latte-ai open")
         elif cmd == "chat" and len(a) == 2:
-            with open(a[1], encoding="utf-8") as f:
-                history = json.load(f)
+            if inline:
+                history = json.loads(a[1])
+            else:
+                with open(a[1], encoding="utf-8") as f:
+                    history = json.load(f)
             text, _model = ask(c, "", history)
             print(text)
         elif cmd == "set" and len(a) == 3 and a[1] in DEFAULTS:

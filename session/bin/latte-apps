@@ -18,12 +18,26 @@
   latte-apps store home              JSON: obchod — trendy, obľúbené, nové, aktualizované (Flathub API, cache 6 h)
   latte-apps store category KAT      JSON: aplikácie kategórie (game, audiovideo, graphics, network, office, …)
   latte-apps store search TEXT       JSON: vyhľadávanie vo Flathube (a balíky Fedory)
-  latte-apps store app ID            JSON: detail — popis, snímky obrazovky, vývojár, licencia, veľkosť, inštalácie, verzie
+  latte-apps store app ID            JSON: detail — popis, snímky obrazovky, vývojár, licencia, veľkosť, inštalácie, verzie,
+                                     hodnotenie a recenzie používateľov (ODRS — tie isté ako v GNOME Software a KDE Discover)
   latte-apps latteos                 JSON: súčasti LatteOS — nainštalovaná verzia (commit) a čo je nové v repozitári
   latte-apps drivers                 JSON: ovládače a firmvér — fwupd, grafika (NVIDIA/AMD/Intel), odporúčania
   latte-apps defaults                JSON: predvolené aplikácie (prehliadač, pošta, súbory, obrázky, video, hudba, text, PDF, archívy)
                                      s aktuálnou voľbou a kandidátmi podľa MimeType v .desktop (Nastavenia › Predvolené aplikácie)
   latte-apps default KAT DESKTOP_ID  nastaví aplikáciu pre všetky typy kategórie (xdg-mime default → ~/.config/mimeapps.list)
+
+  latte-apps store kurator           JSON: kurátorský výber, ktorý spravujú iní a priebežne aktualizujú — sekcie obchodu
+                                     Bazaar z Bluefinu a Bazzite (curated.yaml / content.yaml na GitHube), cache 24 h
+  latte-apps store similar ID        JSON: podobné aplikácie (rovnaká kategória a kľúčové slová, podľa inštalácií)
+  latte-apps eol                     JSON: nainštalované aplikácie na runtime bez podpory (koniec bezpečnostných opráv)
+  latte-apps rollback ID             vráti Flatpak na predchádzajúcu verziu a podrží ju (flatpak mask) — po zlej aktualizácii
+  latte-apps unmask ID               znova povolí aktualizácie aplikácie
+  latte-apps recenzia ID HVIEZDY NADPIS TEXT [VERZIA]   pošle recenziu do ODRS (zobrazí sa v GNOME Software, Discover…)
+  latte-apps job run NÁZOV -- PRÍKAZ…   úloha na pozadí (systemd-run --user): prežije zatvorenie okna, úlohy idú v rade
+                                     za sebou; čaká na koniec a vráti jej kód (okno App Managera to len sleduje)
+  latte-apps jobs                    JSON: posledné úlohy — stav (queued/running/done/error), percentá, posledný riadok
+  latte-apps job konzola [ID]        „Zobraziť konzolu“: terminál so živým záznamom úlohy (iba na klik používateľa)
+  latte-apps job zrus ID             zrušiť úlohu
 
 RPM (systém) inštaluje a odinštaluje grafický Inštalátor (latte-app instalator) cez sudo dnf.
 """
@@ -127,6 +141,154 @@ def human(n):
             return ("%.0f %s" if u in ("B", "kB") or n >= 10 else "%.1f %s") % (n, u)
         n /= 1024
     return "%.1f TB" % n
+
+
+def eol():
+    """aplikácie, ktorých runtime už nedostáva opravy (flatpak remote-info hlási End-of-life / EOL)"""
+    rc, text, _ = sh(["flatpak", "list", "--app", "--columns=application,runtime,installation"], timeout=20)
+    rts, out = {}, []
+    for line in text.splitlines():
+        p = line.split("\t")
+        if len(p) >= 2:
+            rts.setdefault(p[1], []).append((p[0], p[2] if len(p) > 2 else "user"))
+    for rt, apps in rts.items():
+        _, info, _ = sh(["flatpak", "remote-info", "--" + ("system" if apps[0][1] == "system" else "user"), "flathub", "runtime/" + rt], timeout=20)
+        m = re.search(r"(?im)^\s*(?:end-of-life|eol)(?:-rebase)?\s*:\s*(.+)$", info)
+        if m:
+            out += [{"id": a, "runtime": rt, "reason": m.group(1).strip()} for a, _ in apps]
+    return out
+
+
+def rollback(aid):
+    """predchádzajúca verzia z histórie Flathubu, potom maska (automatická aktualizácia ju nepreskočí späť)"""
+    _, info, _ = sh(["flatpak", "info", "--user", aid], timeout=20)
+    cur = (re.search(r"(?im)^\s*commit:\s*(\w+)", info) or [None, ""])[1]
+    _, log, _ = sh(["flatpak", "remote-info", "--user", "--log", "flathub", aid], timeout=60)
+    commits = re.findall(r"(?im)^\s*commit:\s*(\w+)", log)
+    if cur in commits and commits.index(cur) + 1 < len(commits):
+        prev = commits[commits.index(cur) + 1]
+    elif len(commits) > 1:
+        prev = commits[1]
+    else:
+        print("Staršia verzia na Flathube nie je", file=sys.stderr)
+        return 1
+    rc = subprocess.call(["flatpak", "update", "--user", "-y", "--noninteractive", "--commit=" + prev, aid])
+    if rc == 0:
+        subprocess.call(["flatpak", "mask", "--user", aid])
+    return rc
+
+
+def review(aid, stars, summary, text, version=""):
+    import hashlib, urllib.request
+    try:
+        mid = open("/etc/machine-id").read().strip()
+    except OSError:
+        mid = "latteos"
+    body = {"app_id": aid, "locale": (os.environ.get("LANG") or "sk_SK").split(".")[0], "distro": "Fedora",
+            "version": version or "unknown", "user_hash": hashlib.sha1(("latteos" + mid).encode()).hexdigest(),
+            "user_display": os.environ.get("USER", ""), "summary": summary[:70], "description": text[:3000],
+            "rating": max(1, min(5, int(stars))) * 20, "user_skey": hashlib.sha1(("latteos" + mid + aid).encode()).hexdigest()}
+    req = urllib.request.Request(ODRS + "/submit", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": "LatteOS-AppManager/0.1"})
+    r = json.load(urllib.request.urlopen(req, timeout=15))
+    print(r.get("msg") or "odoslané")
+    return 0 if r.get("success", True) else 1
+
+
+# ── úlohy na pozadí (ako Bazaar: inštalácie nezávislé od okna) ───────────────────
+JOBDIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "latte-apps")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
+
+
+def job_state(jid, **kv):
+    p = os.path.join(JOBDIR, jid + ".json")
+    try:
+        st = json.load(open(p))
+    except (OSError, ValueError):
+        st = {"id": jid}
+    st.update(kv)
+    tmp = p + ".tmp"
+    json.dump(st, open(tmp, "w"), ensure_ascii=False)
+    os.replace(tmp, p)
+    return st
+
+
+def job_run(title, argv):
+    """založí úlohu, spustí ju mimo okna a počká na jej koniec (kód úlohy)"""
+    import time
+    os.makedirs(JOBDIR, exist_ok=True)
+    jid = time.strftime("%H%M%S") + "-%d" % os.getpid()
+    job_state(jid, title=title, argv=argv, state="queued", percent=-1, line="Čaká v rade…", started=int(time.time()),
+              log=os.path.join(JOBDIR, jid + ".log"))
+    me = os.path.abspath(sys.argv[0])
+    if shutil.which("systemd-run"):
+        rc = subprocess.call(["systemd-run", "--user", "--collect", "--quiet", "--unit", "latte-apps-" + jid,
+                              sys.executable, me, "_job", jid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        rc = 1
+    if rc != 0:                                       # bez systemd používateľa: odpojený proces
+        subprocess.Popen([sys.executable, me, "_job", jid], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    while True:
+        time.sleep(0.5)
+        st = job_state(jid)
+        if st.get("state") in ("done", "error"):
+            print(st.get("line", ""))
+            return int(st.get("code", 1))
+
+
+def job_worker(jid):
+    """vykoná úlohu v pseudoterminále (flatpak vtedy hlási priebeh), všetko do záznamu; rad cez zámok"""
+    import fcntl, pty, select, time
+    st = job_state(jid)
+    lock = open(os.path.join(JOBDIR, "rad.lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)                  # jedna úloha naraz (flatpak/dnf nemajú radi súbeh)
+    job_state(jid, state="running", line="Začínam…", pid=os.getpid())
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.execvp(st["argv"][0], st["argv"])
+    buf = ""
+    with open(st["log"], "a") as log:
+        log.write("$ %s\n" % " ".join(st["argv"])); log.flush()
+        last = 0
+        while True:
+            r, _, _ = select.select([fd], [], [], 1.0)
+            if r:
+                try:
+                    data = os.read(fd, 4096).decode(errors="replace")
+                except OSError:
+                    break
+                if not data:
+                    break
+                log.write(data); log.flush()
+                buf = (buf + ANSI.sub("", data))[-2000:]
+                if time.time() - last > 0.4:          # nezapisovať stav pri každom bajte
+                    last = time.time()
+                    pcts = re.findall(r"(\d{1,3})\s?%", buf[-300:])
+                    lines = [l.strip() for l in re.split(r"[\r\n]+", buf) if l.strip()]
+                    job_state(jid, percent=min(100, int(pcts[-1])) if pcts else -1, line=(lines[-1] if lines else "")[:120])
+            elif os.waitpid(pid, os.WNOHANG) != (0, 0):
+                break
+    try:
+        _, status = os.waitpid(pid, 0)
+        code = os.waitstatus_to_exitcode(status)
+    except ChildProcessError:
+        code = 0
+    lines = [l.strip() for l in re.split(r"[\r\n]+", buf) if l.strip()]
+    job_state(jid, state="done" if code == 0 else "error", code=code, percent=100 if code == 0 else -1,
+              line=("Hotovo: " + st["title"]) if code == 0 else ("Nepodarilo sa (%d): %s" % (code, lines[-1] if lines else "")),
+              ended=int(time.time()))
+
+
+def jobs():
+    out = []
+    for f in sorted(glob.glob(os.path.join(JOBDIR, "*.json")), key=os.path.getmtime, reverse=True)[:20]:
+        try:
+            out.append(json.load(open(f)))
+        except (OSError, ValueError):
+            pass
+    return out
 
 
 def installed():
@@ -666,6 +828,26 @@ FLATHUB = "https://flathub.org/api/v2"
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "flathub")
 
 
+def appstream_rpm(q):
+    """Aplikácie z repozitárov Fedory podľa metadát AppStream (appstreamcli, ako GNOME Software a Discover):
+    mená a popisy aplikácií namiesto surových balíkov; rýchlejšie ako dnf repoquery. Záloha: dnf."""
+    if not shutil.which("appstreamcli"):
+        return [x for x in search(q) if x["source"] == "rpm"]
+    rc, text, _ = sh(["env", "LC_ALL=C", "appstreamcli", "search", q], timeout=30)
+    out = []
+    for block in text.split("\n---"):
+        f = {}
+        for line in block.strip().splitlines():
+            k, _, v = line.partition(": ")
+            f.setdefault(k.strip(), v.strip())
+        pkg = f.get("Package")
+        if not pkg or "desktop-application" not in f.get("Identifier", "") and "console-application" not in f.get("Identifier", ""):
+            continue                                   # iba aplikácie z RPM (Flatpak ukazuje Flathub vyššie)
+        out.append({"source": "rpm", "id": pkg, "name": f.get("Name", pkg), "comment": f.get("Summary", ""), "version": "",
+                    "note": "Fedora · systémový balík, inštalácia vyžaduje heslo správcu"})
+    return out
+
+
 def fh(path, ttl=6 * 3600, post=None):
     import hashlib, time, urllib.request
     os.makedirs(CACHE, exist_ok=True)
@@ -688,6 +870,89 @@ def fh(path, ttl=6 * 3600, post=None):
         return None
 
 
+# ── hodnotenia používateľov: ODRS (Open Desktop Ratings Service, odrs.gnome.org) — spoločné pre GNOME Software,
+# KDE Discover a ďalšie obchody; Flathub vlastné hviezdičky nemá (iba inštalácie a overenie vývojára)
+ODRS = "https://odrs.gnome.org/1.0/reviews/api"
+_ratings = None
+
+
+def odrs_ratings():
+    """všetky hodnotenia naraz (raz denne do cache): id → (priemer 1–5, počet)"""
+    global _ratings
+    if _ratings is not None:
+        return _ratings
+    import time, urllib.request
+    f = os.path.join(CACHE, "odrs-ratings.json")
+    raw = None
+    if os.path.exists(f) and time.time() - os.path.getmtime(f) < 24 * 3600:
+        try:
+            raw = json.load(open(f))
+        except ValueError:
+            raw = None
+    if raw is None:
+        try:
+            req = urllib.request.Request(ODRS + "/ratings", headers={"User-Agent": "LatteOS-AppManager/0.1"})
+            raw = json.load(urllib.request.urlopen(req, timeout=15))
+            os.makedirs(CACHE, exist_ok=True)
+            json.dump(raw, open(f, "w"))
+        except Exception:
+            raw = json.load(open(f)) if os.path.exists(f) else {}
+    _ratings = {}
+    for aid, r in (raw or {}).items():
+        n = sum(int(r.get("star%d" % i, 0)) for i in range(1, 6))
+        if n:
+            avg = sum(i * int(r.get("star%d" % i, 0)) for i in range(1, 6)) / n
+            _ratings[aid.removesuffix(".desktop")] = (round(avg, 1), n)
+    return _ratings
+
+
+def odrs_id(aid):
+    """pod akým menom má aplikáciu ODRS: väčšinou id Flatpaku, ale staré známe aplikácie pod krátkym menom
+    (org.mozilla.firefox → firefox, org.mozilla.thunderbird → thunderbird). Krátke meno sa berie iba pri aplikácii
+    s aspoň 50 hodnoteniami — pri menej známych by sa mohlo trafiť do inej aplikácie s rovnakým menom."""
+    r = odrs_ratings()
+    for c in (aid, aid.lower()):
+        if c in r:
+            return c
+    short = aid.split(".")[-1].lower()
+    return short if short in r and r[short][1] >= 50 else None
+
+
+def rating_of(aid):
+    k = odrs_id(aid)
+    r = odrs_ratings().get(k) if k else None
+    return {"rating": r[0], "ratingCount": r[1]} if r else {"rating": 0, "ratingCount": 0}
+
+
+def odrs_reviews(aid, limit=5):
+    """posledné recenzie (jazyk podľa systému, inak anglické)"""
+    import hashlib, urllib.request
+    try:
+        mid = open("/etc/machine-id").read().strip()
+    except OSError:
+        mid = "latteos"
+    aid = (odrs_id(aid) or aid).removesuffix(".desktop") + ".desktop"      # ODRS pozná aplikácie s príponou .desktop
+    body = {"app_id": aid, "locale": (os.environ.get("LANG") or "sk_SK").split(".")[0], "distro": "Fedora",
+            "version": "unknown", "user_hash": hashlib.sha1(("latteos" + mid).encode()).hexdigest(), "limit": limit}
+    f = os.path.join(CACHE, "odrs-%s.json" % re.sub(r"[^\w.-]", "_", aid))
+    try:
+        import time
+        if os.path.exists(f) and time.time() - os.path.getmtime(f) < 24 * 3600:
+            data = json.load(open(f))
+        else:
+            req = urllib.request.Request(ODRS + "/fetch", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json", "User-Agent": "LatteOS-AppManager/0.1"})
+            data = json.load(urllib.request.urlopen(req, timeout=10))
+            json.dump(data, open(f, "w"))
+    except Exception:
+        data = json.load(open(f)) if os.path.exists(f) else []
+    out = []
+    for r in data if isinstance(data, list) else []:
+        out.append({"stars": round((r.get("rating") or 0) / 20), "summary": r.get("summary", ""), "text": (r.get("description") or "")[:500],
+                    "author": r.get("reviewer_name") or "", "version": r.get("version") or "", "date": r.get("date_created") or 0})
+    return out[:limit]
+
+
 def flatpak_installed():
     rc, text, _ = sh(["flatpak", "list", "--app", "--columns=application"], timeout=20)
     return set(l.strip() for l in text.splitlines() if l.strip())
@@ -698,35 +963,152 @@ def card(h, inst):
     return {"id": aid, "name": h.get("name", aid), "summary": h.get("summary", ""), "icon": h.get("icon") or "",
             "developer": h.get("developer_name") or "", "verified": bool(h.get("verification_verified")),
             "installs": h.get("installs_last_month") or 0, "category": h.get("main_categories") or "",
-            "free": h.get("is_free_license", True), "installed": aid in inst}
+            "free": h.get("is_free_license", True), "installed": aid in inst, **rating_of(aid)}
+
+
+# kurátorský výber iných (moderne udržiavaný, mení sa s ich vydaniami) — sekcie obchodu Bazaar
+CURATORS = [
+    ("Bluefin", "https://raw.githubusercontent.com/projectbluefin/common/main/system_files/bluefin/etc/bazaar/curated.yaml"),
+    ("Bazzite", "https://raw.githubusercontent.com/ublue-os/bazzite/main/system_files/desktop/shared/usr/share/ublue-os/bazaar/content.yaml"),
+]
+SECTION_SK = {"Bluefin Recommends": "Bluefin odporúča", "Browsers": "Prehliadače", "Gaming": "Hry", "Streaming & Chat": "Streamovanie a chat",
+              "Music & Media": "Hudba a médiá", "Office & Productivity": "Kancelária a produktivita", "Utilities": "Nástroje",
+              "Development": "Vývoj", "Communication": "Komunikácia", "Graphics": "Grafika", "Productivity": "Produktivita",
+              "Media": "Médiá", "Education": "Vzdelávanie", "Science": "Veda", "Security": "Bezpečnosť", "Games": "Hry",
+              "Sustainability & Education": "Udržateľnosť a vzdelávanie", "AI and Machine Learning": "AI a strojové učenie",
+              "Desktop Development": "Vývoj aplikácií", "Cloud Native Development": "Vývoj pre cloud a kontajnery"}
+
+
+def curated_sections(raw):
+    """rows → [(nadpis, podnadpis, [app id])] — vydržať aj staršiu schému (sections/category)"""
+    try:
+        import yaml
+        doc = yaml.safe_load(raw) or {}
+    except Exception:
+        return []
+    rows = doc.get("rows") or doc.get("sections") or []
+    out = []
+    for r in rows:
+        sec = r.get("section") if isinstance(r, dict) and "section" in r else (r if isinstance(r, dict) else None)
+        if not isinstance(sec, dict):
+            continue
+        def txt(v):
+            if isinstance(v, dict):
+                v = v.get("string", v)
+                if isinstance(v, dict):
+                    return v.get("sk") or v.get("cs") or v.get("en") or next(iter(v.values()), "")
+            return v if isinstance(v, str) else ""
+        ids = sec.get("appids")
+        ids = ids.get("list", []) if isinstance(ids, dict) else (ids or [])
+        title = txt(sec.get("title"))
+        if ids:
+            out.append((SECTION_SK.get(title, title), txt(sec.get("subtitle")), [i for i in ids if isinstance(i, str)]))
+    return out
+
+
+def kurator(inst):
+    import time, urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+    res = []
+    for name, url in CURATORS:
+        f = os.path.join(CACHE, "kurator-%s.yaml" % name.lower())
+        raw = None
+        if os.path.exists(f) and time.time() - os.path.getmtime(f) < 24 * 3600:
+            raw = open(f).read()
+        else:
+            try:
+                raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "LatteOS-AppManager/0.1"}), timeout=15).read().decode()
+                os.makedirs(CACHE, exist_ok=True)
+                open(f, "w").write(raw)
+            except Exception:
+                raw = open(f).read() if os.path.exists(f) else ""
+        for title, sub, ids in curated_sections(raw):
+            res.append({"source": name, "title": title, "subtitle": sub, "ids": ids[:24]})
+    allids = sorted({i for r in res for i in r["ids"]})
+    with ThreadPoolExecutor(8) as ex:                 # detaily z Flathubu (cache 7 dní); aplikácie, čo už nie sú, vypadnú
+        dets = dict(zip(allids, ex.map(lambda i: fh("/appstream/" + i, ttl=7 * 24 * 3600), allids)))
+    for r in res:
+        r["apps"] = [card({"app_id": i, "name": dets[i].get("name", i), "summary": dets[i].get("summary", ""), "icon": dets[i].get("icon") or "",
+                           "developer_name": dets[i].get("developer_name", "")}, inst) for i in r.pop("ids") if dets.get(i)]
+    return {"sections": [r for r in res if r["apps"]]}
+
+
+def oars_age(cr):
+    """vekové hodnotenie OARS → odporúčaný vek (približne ako Flathub / GNOME Software)"""
+    if not isinstance(cr, dict):
+        return None
+    lvl = {"none": 0, "mild": 1, "moderate": 2, "intense": 3}
+    worst, why = 0, []
+    for k, v in cr.items():
+        if k == "type":
+            continue
+        n = lvl.get(str(v), 0)
+        if n > worst:
+            worst, why = n, [k]
+        elif n == worst and n > 0:
+            why.append(k)
+    return {"age": [0, 7, 12, 18][worst], "reasons": why[:4]}
 
 
 def store(a):
     inst = flatpak_installed()
+    if a[0] == "kurator":
+        return kurator(inst)
+    if a[0] == "similar" and len(a) > 1:
+        det = fh("/appstream/" + a[1], ttl=24 * 3600) or {}
+        words = (det.get("keywords") or [])[:3] + [(det.get("categories") or [""])[0]]
+        seen, out = {a[1]}, []
+        for q in [w for w in words if w]:
+            for h in (fh("/search", 24 * 3600, {"query": q}) or {}).get("hits", [])[:20]:
+                c = card(h, inst)
+                if c["id"] not in seen:
+                    seen.add(c["id"]); out.append(c)
+        out.sort(key=lambda c: -(c.get("installs") or 0))
+        return {"apps": out[:8]}
     if a[0] == "home":
         out = {}
         for key, path in (("trendy", "/collection/trending"), ("oblubene", "/collection/popular"),
                           ("nove", "/collection/recently-added"), ("aktualizovane", "/collection/recently-updated")):
             d = fh(path + "?page=1&per_page=16") or {}
             out[key] = [card(h, inst) for h in d.get("hits", []) if h.get("type", "desktop-application") == "desktop-application"]
-        # úvodný banner: prvá trendová aplikácia so snímkou obrazovky
-        for c in out.get("trendy", [])[:6]:
+        # kolotoč bannerov (obchod podľa ZimaOS: dva naraz — snímka, ikona, názov, slogan): trendové a obľúbené
+        # aplikácie so snímkou obrazovky, striedavo; `banner` (prvý z nich) ostáva pre staršie okno
+        bannery, videne = [], set()
+        for c in [x for dvojica in zip(out.get("trendy", [])[:8], out.get("oblubene", [])[:8]) for x in dvojica]:
+            if c["id"] in videne:
+                continue
+            videne.add(c["id"])
             det = fh("/appstream/" + c["id"], ttl=24 * 3600) or {}
             shot = shots(det)
             if shot:
-                out["banner"] = dict(c, screenshot=shot[0], description=plain(det.get("description", ""))[:260])
+                bannery.append(dict(c, screenshot=shot[0], description=plain(det.get("description", ""))[:260]))
+            if len(bannery) >= 6:
                 break
+        out["bannery"] = bannery
+        if bannery:
+            out["banner"] = bannery[0]
         return out
     if a[0] == "category" and len(a) > 1:
         page = a[2] if len(a) > 2 else "1"
-        d = fh("/collection/category/%s?page=%s&per_page=48" % (a[1], page)) or {}
+        # „kategória/Podkategória“ (napr. office/Finance, network/Chat): zoznam podkategórie Flathubu
+        kat, _, pod = a[1].partition("/")
+        if pod:
+            import urllib.parse
+            d = fh("/collection/category/%s/subcategories?subcategory=%s&page=%s&per_page=48"
+                   % (kat, urllib.parse.quote(pod), page)) or {}
+        else:
+            d = fh("/collection/category/%s?page=%s&per_page=48" % (kat, page)) or {}
         return {"apps": [card(h, inst) for h in d.get("hits", [])], "pages": d.get("totalPages", 1)}
     if a[0] == "search" and len(a) > 1:
         q = " ".join(a[1:])
-        d = fh("/search", ttl=3600, post={"query": q}) or {}
+        # Flathub (HTTP) a aplikácie Fedory (AppStream) naraz — ako GNOME Software / Discover
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(2) as ex:
+            f_hub = ex.submit(fh, "/search", 3600, {"query": q})
+            f_rpm = ex.submit(appstream_rpm, q)
+            d, rpm = f_hub.result() or {}, f_rpm.result()
         apps = [card(h, inst) for h in d.get("hits", [])[:40] if h.get("type", "desktop-application") in ("desktop-application", "console-application")]
-        rpm = [x for x in search(q) if x["source"] == "rpm"][:8] if a[0] == "search" else []
-        return {"apps": apps, "rpm": rpm}
+        return {"query": q, "apps": apps, "rpm": rpm[:8]}
     if a[0] == "app" and len(a) > 1:
         aid = a[1]
         det = fh("/appstream/" + aid, ttl=24 * 3600) or {}
@@ -743,7 +1125,7 @@ def store(a):
                 "installsTotal": stats.get("installs_total") or 0, "verified": bool(ver.get("verified")),
                 "verifiedBy": ver.get("website") or ver.get("login_name") or "", "releases": rel,
                 "homepage": urls.get("homepage", ""), "help": urls.get("help", ""), "categories": det.get("categories") or [],
-                "installed": aid in inst}
+                "installed": aid in inst, **rating_of(aid), "reviews": odrs_reviews(aid), "oars": oars_age(det.get("content_rating"))}
     return None
 
 
@@ -872,6 +1254,34 @@ def main(a):
         print(json.dumps(drivers(), ensure_ascii=False))
     elif cmd == "check" and len(a) == 2:
         print(json.dumps(check(a[1]), ensure_ascii=False))
+    elif cmd == "eol":
+        print(json.dumps(eol(), ensure_ascii=False))
+    elif cmd == "rollback" and len(a) == 2:
+        return rollback(a[1])
+    elif cmd == "unmask" and len(a) == 2:
+        return subprocess.call(["flatpak", "mask", "--user", "--remove", a[1]])
+    elif cmd == "recenzia" and len(a) >= 5:
+        return review(a[1], a[2], a[3], a[4], a[5] if len(a) > 5 else "")
+    elif cmd == "job" and len(a) >= 4 and a[1] == "run" and "--" in a:
+        i = a.index("--")
+        return job_run(" ".join(a[2:i]), a[i + 1:])
+    elif cmd == "_job" and len(a) == 2:
+        job_worker(a[1])
+    elif cmd == "jobs":
+        print(json.dumps(jobs(), ensure_ascii=False))
+    elif cmd == "job" and len(a) >= 2 and a[1] == "konzola":
+        js = [j for j in jobs() if len(a) < 3 or j.get("id") == a[2]]
+        if js:
+            subprocess.Popen(["latte-terminal", "tail", "-n", "+1", "-f", js[0]["log"]], start_new_session=True)
+    elif cmd == "job" and len(a) == 3 and a[1] == "zrus":
+        subprocess.call(["systemctl", "--user", "stop", "latte-apps-" + a[2]], stderr=subprocess.DEVNULL)
+        st = job_state(a[2])
+        if st.get("pid"):
+            try:
+                os.kill(int(st["pid"]), 15)
+            except OSError:
+                pass
+        job_state(a[2], state="error", code=130, line="Zrušené")
     elif cmd in ("install", "remove") and len(a) == 3 and a[1] == "flatpak":
         argv = ["flatpak", "install", "--user", "-y", "--noninteractive", "flathub", a[2]] if cmd == "install" else ["flatpak", "uninstall", "--user", "-y", "--noninteractive", a[2]]
         return subprocess.call(argv)

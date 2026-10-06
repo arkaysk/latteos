@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "latte-boot"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "latte-hw",
 ]
 
 [[package]]
 name = "latte-hw"
-version = "0.1.0"
+version = "0.3.0"

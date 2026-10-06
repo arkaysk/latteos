@@ -1,0 +1,123 @@
+#!/usr/bin/python3
+"""latte-chatgoo — ChatGoo (addon plochy Kvapky): obal pre pôvodný Beeper pre Linux (AppImage alebo Flatpak).
+Beeper po minimalizácii „vtečie“ do kvapky ChatGoo, okolo nej visia správy ako bobule (rovnaké pravidlá ako
+upozornenia pri DaNoGoo), klik na kvapku vráti okno, klik na správu otvorí jej rozhovor (akcia upozornenia).
+
+  latte-chatgoo stav       JSON: installed, running, address, minimized, unread, title, launch, icon
+  latte-chatgoo ukaz       ukáže Beeper (obnoví z kvapky alebo spustí)
+  latte-chatgoo skry       schová Beeper do kvapky (special:minimized, ako minimalizácia v LatteOS)
+  latte-chatgoo prepni     ukáž ↔ skry (klik na kvapku)
+  latte-chatgoo ziskat     Beeper nie je nainštalovaný: otvorí stránku na stiahnutie (AppImage)
+
+Správy: Beeper posiela bežné upozornenia (freedesktop) s aplikáciou „Beeper“ — logika plochy ich podľa toho
+presmeruje z DaNoGoo k ChatGoo (is_chat v kvapka.luau).
+"""
+import glob, json, os, re, shutil, subprocess, sys
+
+HOME = os.path.expanduser("~")
+CLASS = re.compile(r"beeper", re.I)
+FLATPAKS = ["com.automattic.beeper.desktop", "com.beeper.Beeper"]
+
+
+def launcher():
+    for exe in ("beeper", "beepertexts"):
+        if shutil.which(exe):
+            return [exe]
+    for pat in (HOME + "/Applications/*eeper*.AppImage", HOME + "/.local/bin/*eeper*.AppImage", HOME + "/Stiahnuté/*eeper*.AppImage",
+                HOME + "/Downloads/*eeper*.AppImage", "/opt/beeper*/beeper*"):
+        for f in sorted(glob.glob(pat)):
+            if os.access(f, os.X_OK):
+                return [f]
+    if shutil.which("flatpak"):
+        have = subprocess.run(["flatpak", "list", "--app", "--columns=application"], capture_output=True, text=True).stdout.split()
+        for fid in FLATPAKS:
+            if fid in have:
+                return ["flatpak", "run", fid]
+    return None
+
+
+def icon():
+    """pôvodná ikona Beepera: Icon= zo spúšťača (.desktop) — meno ikony z témy alebo cesta k súboru"""
+    dirs = [HOME + "/.local/share/applications", "/usr/share/applications", "/usr/local/share/applications",
+            "/var/lib/flatpak/exports/share/applications", HOME + "/.local/share/flatpak/exports/share/applications"]
+    for d in dirs:
+        for f in sorted(glob.glob(d + "/*.desktop")):
+            if not CLASS.search(os.path.basename(f)):
+                continue
+            try:
+                m = re.search(r"^Icon=(.+)$", open(f, encoding="utf-8", errors="replace").read(), re.M)
+            except OSError:
+                continue
+            if m:
+                return m.group(1).strip()
+    return ""
+
+
+def window():
+    try:
+        cl = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=3).stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    for c in cl:
+        if CLASS.search(c.get("class", "") + " " + c.get("initialClass", "")):
+            return c
+    return None
+
+
+def state():
+    w = window()
+    title = (w or {}).get("title", "")
+    m = re.search(r"\((\d+)\)|^(\d+)\b|\[(\d+)\]", title)
+    return {"installed": launcher() is not None, "running": w is not None, "address": (w or {}).get("address", ""),
+            "minimized": bool(w) and str((w.get("workspace") or {}).get("name", "")).startswith("special:minimized"),
+            "unread": int(next(g for g in m.groups() if g)) if m else 0, "title": title, "launch": launcher() or [], "icon": icon()}
+
+
+def hl_eval(code):
+    subprocess.run(["hyprctl", "eval", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def show():
+    w = window()
+    if w:
+        hl_eval('latte.win.activate("%s")' % w["address"])
+        return 0
+    cmd = launcher()
+    if not cmd:
+        return get()
+    subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 0
+
+
+def hide():
+    w = window()
+    if w:
+        hl_eval('latte.win.minimize_addr("%s")' % w["address"])
+    return 0
+
+
+def get():
+    subprocess.Popen(["xdg-open", "https://www.beeper.com/download"], start_new_session=True)
+    print("Beeper nie je nainštalovaný — otvorená stránka na stiahnutie (Linux: AppImage)")
+    return 1
+
+
+def main(a):
+    c = a[0] if a else "stav"
+    if c == "stav":
+        print(json.dumps(state(), ensure_ascii=False)); return 0
+    if c == "ukaz":
+        return show()
+    if c == "skry":
+        return hide()
+    if c == "prepni":
+        st = state()
+        return hide() if st["running"] and not st["minimized"] else show()
+    if c == "ziskat":
+        return get()
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

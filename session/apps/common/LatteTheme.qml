@@ -41,7 +41,17 @@ Scope {
     readonly property string fontMono: "JetBrains Mono"
     readonly property int radius: 14
     // animácie: pri stupni Softvér/Minimálny (VM, slabé PC) žiadne — kreslí CPU
-    readonly property string tier: Quickshell.env("LATTE_TIER") || ""
+    // stupeň: voľba používateľa (~/.config/latteos/tier, mení sa za behu) má prednosť pred latte-boot (LATTE_TIER)
+    property string forcedTier: ""
+    readonly property string tier: forcedTier !== "" && (Quickshell.env("LATTE_MODE") || "") === "normal" ? forcedTier : (Quickshell.env("LATTE_TIER") || "")
+    FileView {
+        path: t.cfgHome + "/latteos/tier"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: reload()
+        onLoaded: { const v = text().trim(); t.forcedTier = ["plny", "standard", "usporny", "minimalny", "softver"].indexOf(v) >= 0 ? v : ""; }
+        onLoadFailed: t.forcedTier = ""
+    }
     // sklo: okná LatteOS nechajú bočný panel polopriehľadný a Hyprland rozmaže, čo je za ním (blur je iba pri Plnom a Štandarde)
     readonly property bool glass: tier === "plny" || tier === "standard"
     readonly property int animMs: (tier === "softver" || tier === "minimalny" || tier === "safe") ? 0 : 180

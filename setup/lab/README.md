@@ -130,3 +130,21 @@ EDID aj na neaktívnom vstupe, funguje ako dummy zástrčka. Overiť s monitorom
 - `latte-shell` (fork Noctalie) sa postaví, iba ak je zdroj v `~/latte-shell`; inak beží Noctalia z COPR.
 - `hyprland-latte` (vmwgfx záplata) na reálnom PC netreba; Hyprland ostáva z COPR `lionheartp/Hyprland`
   a jeho aktualizácie z COPR blokuje `excludepkgs` (pluginy sú postavené proti nainštalovanej verzii).
+
+## Na diaľku bez monitora, myši a klávesnice (Sunshine + Moonlight)
+Sunshine je server na latte-lab (sníma obrazovku, kóduje grafickou kartou, prijíma myš a klávesnicu), Moonlight je
+klient na pracovnom PC. Rýchlejšie a plynulejšie ako VNC/RDP (stavané na hry), so zvukom.
+
+1. Na latte-lab (raz): `sudo setup/lab/vzdialene.sh` — Sunshine z oficiálneho COPR `lizardbyte/stable` ako služba
+   v každej relácii LatteOS, snímanie cez Wayland (`capture = wlr`), kódovanie VAAPI (RX 640: H.264, HEVC), porty
+   vo firewalle, **automatické prihlásenie** po štarte (greetd `initial_session`; po odhlásení je prihlasovacia
+   obrazovka). Bez pripojeného monitora si Hyprland vytvorí **virtuálnu obrazovku** `LATTE-VIRT` 1920×1080
+   (hyprland.lua), po pripojení monitora ju zruší.
+2. Na pracovnom PC (Windows, PowerShell): `winget install MoonlightGameStreamingProject.Moonlight`
+3. V prehliadači na pracovnom PC: `https://192.168.137.231:47990` — pri prvej návšteve si vytvoríš meno a heslo
+   správcu Sunshine (certifikát je vlastný, prehliadač sa spýta; pokračovať).
+4. V Moonlighte: ⊕ → `192.168.137.231` → ukáže PIN → zadať ho v Sunshine (karta PIN) → Desktop.
+
+Po odpojení monitora (overené 30. 9.): Hyprland prejde na `LATTE-VIRT`, okná mimo obrazovky vráti na stred,
+priveľké zmenší na 90 % a prepne na plochu s oknami (`latte.windows_onscreen`, hyprland.lua).
+Ukončenie streamu: Ctrl+Alt+Shift+Q (Moonlight). Obraz sa prispôsobí rozlíšeniu okna Moonlightu.

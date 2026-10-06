@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Serpantinum
+Comment=Serpantinum shell by ilyamiro on Hyprland, for experiments — kept apart from LatteOS
+Comment[sk]=Shell Serpantinum od ilyamiro na Hyprlande — na pokusy, oddelený od LatteOS
+Exec=/usr/bin/latte-serpantinum
+Type=Application
+DesktopNames=Hyprland

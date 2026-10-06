@@ -1,0 +1,39 @@
+diff --git a/src/session.rs b/src/session.rs
+index 12329c0..818b649 100644
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -115,14 +115,30 @@ impl DrmOutput {
+         let (w, h) = self.size;
+         let wanted: Vec<u64> = if modifiers.is_empty() { vec![0] } else { modifiers.to_vec() };
+         for _ in 0..3 {
+-            let bo = self
++            let made = self
+                 .gbm
+                 .lock()
+                 .unwrap()
+-                .create_buffer_object_with_modifiers2::<()>(w, h, gbm::Format::Xrgb8888, wanted.iter().map(|m| gbm::Modifier::from(*m)), gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING)
+-                .map_err(|e| format!("the card did not make a buffer of {w}×{h}: {e}"))?;
++                .create_buffer_object_with_modifiers2::<()>(w, h, gbm::Format::Xrgb8888, wanted.iter().map(|m| gbm::Modifier::from(*m)), gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING);
++            // LatteOS (latte-lab, RX 640 / GFX8): radeonsi there makes no buffer with modifiers (ENOENT), as
++            // aquamarine also finds ("modifier-less allocation"). Then a linear one, which the card scans out
++            // and Vulkan imports as modifier 0 (LINEAR).
++            let (bo, modifier) = match made {
++                Ok(bo) => {
++                    let m: u64 = bo.modifier().into();
++                    (bo, m)
++                }
++                Err(e) => {
++                    let bo = self
++                        .gbm
++                        .lock()
++                        .unwrap()
++                        .create_buffer_object::<()>(w, h, gbm::Format::Xrgb8888, gbm::BufferObjectFlags::SCANOUT | gbm::BufferObjectFlags::RENDERING | gbm::BufferObjectFlags::LINEAR)
++                        .map_err(|e2| format!("the card did not make a buffer of {w}×{h}: {e}; nor a linear one: {e2}"))?;
++                    (bo, 0u64)
++                }
++            };
+             let fd = bo.fd_for_plane(0).map_err(|e| format!("no handle for the buffer: {e}"))?;
+-            let modifier: u64 = bo.modifier().into();
+             let texture = pleamar::gpu::Gpu::import_dmabuf(
+                 device,
+                 fd,

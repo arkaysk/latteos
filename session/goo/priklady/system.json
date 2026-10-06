@@ -1,0 +1,37 @@
+{
+  "id": "system",
+  "nazov": "Systém",
+  "ikona": "cpu",
+  "popis": "Zaťaženie každých 5 s · nad 2 jantárové jadro · klik: Monitor · koliesko: hlasitosť",
+  "povaha": "pokojna",
+  "efekt": "tlkot",
+  "sila": 0.5,
+  "poloha": {
+    "x": 0.75,
+    "y": 160
+  },
+  "text": {
+    "prikaz": "cut -d' ' -f1 /proc/loadavg",
+    "kazdych": 5
+  },
+  "akcie": {
+    "klik": {
+      "spusti": "latte-app monitor"
+    },
+    "pravy": {
+      "vystup": "uptime -p"
+    },
+    "koliesko": {
+      "hore": {
+        "spusti": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
+      },
+      "dole": {
+        "spusti": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+      }
+    }
+  },
+  "upozornenie": {
+    "prikaz": "awk '{ if ($1 > 2) print \"vystraha\" }' /proc/loadavg",
+    "kazdych": 10
+  }
+}

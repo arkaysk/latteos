@@ -2,6 +2,8 @@
 """latte-games — herná knižnica LatteOS (Herňa, Super+G): nainštalované hry zo Steamu a Heroicu.
 
   latte-games list          JSON: [{id, name, source, cover, size, launch: [argv]}]
+  latte-games proton        stiahne hodnotenia ProtonDB pre hry zo Steamu (iba na požiadanie, cache 7 dní);
+                            `list` ich potom pridá k hrám (proton: platinum|gold|silver|bronze|borked|native)
   latte-games play ID       zapne herný režim (latte.game), profil Výkon a vyššiu váhu CPU pre hru; po hre všetko vráti
 
 Steam: steamapps/appmanifest_*.acf v knižniciach (aj Flatpak Steam), obal z appcache/librarycache.
@@ -98,9 +100,46 @@ def hypr(code):
     subprocess.run(["hyprctl", "eval", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+PROTON_CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", HOME + "/.cache"), "latteos", "protondb.json")
+
+
+def proton_tiers():
+    try:
+        return json.load(open(PROTON_CACHE))
+    except (OSError, ValueError):
+        return {}
+
+
+def proton_fetch():
+    import urllib.request
+    tiers = proton_tiers()
+    for g in games():
+        if not g["id"].startswith("steam:"):
+            continue
+        appid = g["id"][6:]
+        try:
+            d = json.load(urllib.request.urlopen(urllib.request.Request(
+                "https://www.protondb.com/api/v1/reports/summaries/%s.json" % appid, headers={"User-Agent": "LatteOS-Herna/0.1"}), timeout=8))
+            tiers[appid] = {"tier": d.get("tier") or d.get("trendingTier") or "", "reports": d.get("total", 0), "t": int(time.time())}
+        except Exception:
+            pass
+    os.makedirs(os.path.dirname(PROTON_CACHE), exist_ok=True)
+    json.dump(tiers, open(PROTON_CACHE, "w"))
+    return tiers
+
+
 def main(a):
+    if a and a[0] == "proton":
+        print(json.dumps(proton_fetch(), ensure_ascii=False))
+        return 0
     if a[:1] == ["list"]:
-        print(json.dumps(games(), ensure_ascii=False))
+        tiers = proton_tiers()
+        gs = games()
+        for g in gs:
+            t = tiers.get(g["id"][6:]) if g["id"].startswith("steam:") else None
+            if t:
+                g["proton"] = t.get("tier", "")
+        print(json.dumps(gs, ensure_ascii=False))
         return 0
     if len(a) == 2 and a[0] == "play":
         g = next((x for x in games() if x["id"] == a[1]), None)

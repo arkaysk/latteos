@@ -79,14 +79,27 @@ nmcli -t -f NAME,TYPE,DEVICE connection show --active | while IFS=: read -r name
     fi
 done
 
-step "5/8 RPM Fusion (kodeky, Steam) a VA-API s H.264/HEVC pre AMD (Sunshine)"
+step "5/8 RPM Fusion: plný ffmpeg, VA-API s H.264/HEVC pre AMD (tapety, Sunshine)"
 fv="$(rpm -E %fedora)"
 rpm -q rpmfusion-free-release rpmfusion-nonfree-release >/dev/null 2>&1 || sudo dnf -y install \
     "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$fv.noarch.rpm" \
     "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$fv.noarch.rpm"
+# plný ffmpeg: ffmpeg-free má H.264 iba cez softvérový libopenh264, ktorý nevie dekódovať grafickou kartou
+# (živá tapeta 1080p: 66 % → 7 % CPU na latte-lab); postup podľa RPM Fusion Howto/Multimedia
+rpm -q ffmpeg >/dev/null || sudo dnf -y swap ffmpeg-free ffmpeg --allowerasing
 if lspci -n | grep -q ' 0300: 1002:\| 0380: 1002:'; then
     rpm -q mesa-va-drivers-freeworld >/dev/null || sudo dnf -y swap mesa-va-drivers mesa-va-drivers-freeworld \
         || echo "   !! mesa-va-drivers-freeworld sa nenainštaloval (verzia Mesa v RPM Fusion ešte nedobehla?) — skús neskôr"
+fi
+
+# herná relácia (ROADMAP H): gamescope-session z Terra ako Bazzite — Terra iba pre tieto balíky; natívny Steam z RPM Fusion
+if [ "$virt" = none ]; then
+    printf '%s\n' '[terra-latteos]' 'name=Terra (Fyra Labs) — iba gamescope-session pre hernú reláciu LatteOS (ako Bazzite)' \
+        'baseurl=https://repos.fyralabs.com/terra$releasever' 'enabled=1' 'gpgcheck=1' \
+        'gpgkey=https://repos.fyralabs.com/terra$releasever/key.asc' 'includepkgs=gamescope-session gamescope-session-steam' \
+        | sudo tee /etc/yum.repos.d/terra-latteos.repo >/dev/null
+    sudo dnf -y install steam gamescope gamescope-session gamescope-session-steam mangohud \
+        || echo "   !! herná relácia sa nenainštalovala (LatteOS Hra nebude dostupná)"
 fi
 
 step "6/8 balíky LatteOS (setup/f0-install.sh)"

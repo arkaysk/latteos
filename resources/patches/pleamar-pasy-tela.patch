@@ -1,0 +1,109 @@
+diff --git a/src/gpu.rs b/src/gpu.rs
+index 63ba22b..ddbdfa8 100644
+--- a/src/gpu.rs
++++ b/src/gpu.rs
+@@ -274,6 +274,8 @@ struct OpenBody {
+     /// Its shapes as they are, to know on the CPU where its edge goes: the
+     /// glass needs it, since it asks the compositor to blur exactly there.
+     flats: Vec<crate::shapes::FlatShape>,
++    /// How much each of them melts, in the same order: to hand them again to the strips.
++    blends: Vec<f32>,
+ }
+ 
+ /// What a text says right now. Without copying anything when it does not have to: a
+@@ -507,6 +509,52 @@ impl DrawList {
+         })
+     }
+ 
++    /// A body cut into vertical strips, each with the shapes that can reach it: `(box, first shape,
++    /// how many)`. The shader computes every shape of a body for every pixel of its box, so a bar
++    /// with eighty shapes across the screen costs eighty distances a pixel, though only the few
++    /// nearby matter: a smooth minimum is a plain `min` once two distances differ by more than the
++    /// blend, so a shape further than the largest blend (plus what the shadow reaches) changes
++    /// nothing there. Small bodies, glass (it follows the whole silhouette) and transformed ones
++    /// are left as they were.
++    fn strips(&mut self, g: &OpenBody, bounds: [f32; 4], shadow: Option<(f32, f32, f32, f32)>, whole: bool) -> Vec<([f32; 4], usize, usize)> {
++        const STRIP: f32 = 96.0;
++        let wide = bounds[2] - bounds[0];
++        if whole || g.n < 8 || wide < STRIP * 3.0 || g.flats.len() != g.n || g.blends.len() != g.n {
++            return vec![(bounds, g.first, g.n)];
++        }
++        let reach = g.slack * 2.0 + shadow.map_or(0.0, |(sx, sy, sd, _)| sx.abs().max(sy.abs()) + sd + 8.0) + 4.0;
++        let count = (wide / STRIP).ceil() as usize;
++        // Whole pixels, and the same number for the end of one and the start of the next: no seam.
++        let edge = |i: usize| if i == 0 { bounds[0] } else if i >= count { bounds[2] } else { (bounds[0] + i as f32 * STRIP).floor() };
++        let mut out = Vec::with_capacity(count);
++        for i in 0..count {
++            let (x0, x1) = (edge(i), edge(i + 1));
++            let first = self.shapes.len() / PER_SHAPE;
++            let (mut n, mut y, mut endless) = (0, None::<(f32, f32)>, false);
++            for (p, k) in g.flats.iter().zip(&g.blends) {
++                let b = p.bounds();
++                if b.is_some_and(|b| b[2] + reach < x0 || b[0] - reach > x1) {
++                    continue;
++                }
++                self.push_shape(*p, *k);
++                n += 1;
++                match b {
++                    Some(b) => y = Some(y.map_or((b[1], b[3]), |(y0, y1)| (y0.min(b[1]), y1.max(b[3])))),
++                    None => endless = true,
++                }
++            }
++            if n == 0 {
++                continue;
++            }
++            let (y0, y1) = match y {
++                Some((y0, y1)) if !endless => ((y0 - reach).max(bounds[1]), (y1 + reach).min(bounds[3])),
++                _ => (bounds[1], bounds[3]),
++            };
++            out.push(([x0, y0, x1, y1], first, n));
++        }
++        out
++    }
++
+     fn push_shape(&mut self, p: crate::shapes::FlatShape, blend: f32) -> usize {
+         let k = self.shapes.len() / PER_SHAPE;
+         self.shapes.resize(self.shapes.len() + PER_SHAPE, 0.0);
+@@ -1023,7 +1071,7 @@ impl DrawList {
+                 }
+                 _ if hidden => {}
+                 Instr::Group { shadow } => {
+-                    body = Some(OpenBody { first: self.shapes.len() / PER_SHAPE, n: 0, bounds: None, slack: 0.0, shadow: shadow.clone(), flats: Vec::new() })
++                    body = Some(OpenBody { first: self.shapes.len() / PER_SHAPE, n: 0, bounds: None, slack: 0.0, shadow: shadow.clone(), flats: Vec::new(), blends: Vec::new() })
+                 }
+                 Instr::Shape { shape, fusion: blend } => {
+                     let p = flatten(shape, &transforms, &mut self.points);
+@@ -1043,6 +1091,7 @@ impl DrawList {
+                     self.push_shape(p, k);
+                     if let Some(g) = &mut body {
+                         g.flats.push(p);
++                        g.blends.push(k);
+                         g.n += 1;
+                         g.slack = g.slack.max(k * 0.5);
+                         if let Some(b) = bounds {
+@@ -1077,10 +1126,15 @@ impl DrawList {
+                     if v * a > GLASS_VISIBLE {
+                         self.request_glass(&g.flats, &clips, lens);
+                     }
++                    // A long body with many shapes (a bar of drops) is painted in strips, each with only
++                    // the shapes that reach it: see `strips`. The picture is the same; a pixel no longer
++                    // costs every shape of the body.
++                    let whole = v * a > GLASS_VISIBLE || !affine.is_identity();
++                    for (bounds, first, n) in self.strips(&g, bounds, shadow, whole) {
+                     self.element(0.0, bounds, &clips, |e| {
+                         affine.encode(&mut e[44..52]);
+-                        e[1] = g.first as f32;
+-                        e[2] = g.n as f32;
++                        e[1] = first as f32;
++                        e[2] = n as f32;
+                         e[3] = a;
+                         match paint {
+                             Paint::Color(col) => e[8..11].copy_from_slice(&color(col)),
+@@ -1121,6 +1175,7 @@ impl DrawList {
+                             }
+                         }
+                     });
++                    }
+                 }
+                 Instr::Solid { shape, color: col, alpha, glass_spec } => {
+                     let a = alpha.eval(c).clamp(0.0, 1.0) * mult;

@@ -74,7 +74,7 @@ ShellRoot {
     property var wallpapers: []
     property string greeter: "latte"
     property string modePref: "tema"
-    property var bar: ({})            // prepisy [bar.main] z ~/.local/state/noctalia/settings.toml
+    property var bar: ({})            // prepisy [bar.main] zo stavu Noctalie LatteOS (app.nstate)
     property var location: ({})       // prepisy [location]
     property var notif: ({})          // prepisy [notification]
     property var access: ({})         // prepisy [accessibility]
@@ -100,6 +100,25 @@ ShellRoot {
     property string crashLog: ""
     property var ai: ({})             // latte-ai status
     property var aiModels: []
+    // Nastavenia › Kvapky (Goo): ~/.config/latteos/kvapky.json — logika Kvapiek ho číta každé 2 s
+    // engine Goo (relácia „LatteOS GOO“) má kvapky podľa Novej architektúry: jadro sa nedá skryť
+    readonly property bool gooEngine: (Quickshell.env("LATTE_KVAPKY_SCENE") || "").endsWith("goo.plm")
+    I18n { id: i18n }
+    property var kv: ({ skryte: [], zoom: {}, vlastne: [], chatgoo: "kvapka" })
+    readonly property string kvFile: (Quickshell.env("XDG_CONFIG_HOME") || ((Quickshell.env("HOME") || "") + "/.config")) + "/latteos/kvapky.json"
+    Process { id: kvRead; command: ["cat", app.kvFile]
+              stdout: StdioCollector { onStreamFinished: { try { app.kv = Object.assign({ skryte: [], zoom: {}, vlastne: [], chatgoo: "kvapka" }, JSON.parse(this.text)); } catch (e) {} } } }
+    function kvSave(k, msg) {
+        app.kv = k;
+        run(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1.new" && mv -f "$1.new" "$1"', "sh", app.kvFile, JSON.stringify(k)], msg);
+    }
+    function kvToggle(key, name) {
+        const k = JSON.parse(JSON.stringify(app.kv)), h = k.skryte.indexOf(key);
+        if (h >= 0) k.skryte.splice(h, 1); else k.skryte.push(key);
+        kvSave(k, name + (h >= 0 ? " sa ukáže" : " je skrytá"));
+    }
+    property var aiServices: []           // latte-ai sluzby: predplatné (nainštalované, prihlásené)
+    property var aiProg: ({})             // latte-ai priebeh: stav inštalácie/prihlásenia podľa služby
     property string aiAnswer: ""
     property var clockZones: []
     property string about: ""
@@ -123,7 +142,9 @@ ShellRoot {
 
     // ── strom Nastavení (kanonický, main_setting_v2.md §58) ──────────────────────
     // status: ready = funguje · partial = časť · planned = zatiaľ len plán
-    readonly property var areas: [
+    // Goo a Classic majú vlastné stránky (only: "goo" | "classic"); spoločné bez príznaku
+    readonly property var areas: areasAll.map(a => Object.assign({}, a, { pages: a.pages.filter(p => !p.only || p.only === (app.kvapkyOn ? "goo" : "classic")) }))
+    readonly property var areasAll: [
         { key: "softver", title: "Softvér", glyph: "apps", summary: "AI: " + (ai.ok === "1" ? (ai.model || "pripravené") : "nenastavené"), owner: "App Manager",
           pages: [
             { key: "aplikacie", label: "Aplikácie", glyph: "apps", status: "ready" },
@@ -164,7 +185,8 @@ ShellRoot {
             { key: "pismo", label: "Písmo a mierka", glyph: "typography", status: "ready" },
             { key: "pozadie", label: "Pozadie", glyph: "photo", status: "ready" },
             { key: "okna", label: "Okná", glyph: "layout-columns", status: "ready" },
-            { key: "lista", label: "Lišta a systémové menu", glyph: "layout-bottombar", status: "ready" },
+            { key: "kvapky", label: "Kvapky (Goo)", glyph: "coffee", status: "ready", only: "goo" },
+            { key: "lista", label: "Lišta a systémové menu", glyph: "layout-bottombar", status: "ready", only: "classic" },
             { key: "oznamenia", label: "Oznámenia", glyph: "bell", status: "ready" },
             { key: "efekty", label: "Animácie a efekty", glyph: "sparkles", status: "ready" },
             { key: "pristupnost", label: "Prístupnosť", glyph: "accessible", status: "ready" } ] },
@@ -198,7 +220,8 @@ ShellRoot {
         const p = allPages.find(x => x.key === key);
         if (p && p.area) side.openArea = p.area;
         if (push !== false) { history = history.slice(0, historyIndex + 1).concat([key]); historyIndex = history.length - 1; }
-        if (key === "ai") { aiStatus.running = true; aiList.running = true; }
+        if (key === "kvapky") kvRead.running = true;
+        if (key === "ai") { aiStatus.running = true; aiList.running = true; aiSvc.running = true; }
         if (key === "o") aboutProc.running = true;
         dalsie.opened(key);
         if (key === "oznamenia") dndProc.running = true;
@@ -244,6 +267,13 @@ ShellRoot {
             app.greeterConf = c;
         }
     }
+    // zdroje noviniek pre prihlásenie: viac adries RSS v jednom kľúči, oddelené medzerou (latte-goo ich strieda)
+    function rssList() { return String(greeterConf.rss_url || "").split(/[\s,;]+/).filter(u => u !== ""); }
+    function toggleRss(url) {
+        const l = rssList(), i = l.indexOf(url);
+        if (i >= 0) { if (l.length > 1) l.splice(i, 1); } else l.push(url);
+        setGreeter("rss_url", l.join(" "));
+    }
     function setGreeter(k, v) {
         const c = Object.assign({}, greeterConf); c[k] = v; greeterConf = c;
         let out = "# LatteOS — vzhľad obrazovky prihlásenia (zapísali Nastavenia › Účet › Prihlasovanie)\n";
@@ -252,8 +282,19 @@ ShellRoot {
         greeterFile.setText(out);
         status = "Obrazovka prihlásenia uložená (prejaví sa pri ďalšom prihlásení)";
     }
+    // plocha Kvapky má vlastný stav Noctalie (latte-kvapky): podľa príznaku v XDG_RUNTIME_DIR, aj pri prepnutí za behu
+    property bool kvapkyOn: false
+    readonly property string nstate: app.stateHome + (kvapkyOn ? "/latteos/kvapky" : "/latteos") + "/noctalia/settings.toml"
+    readonly property string nstateShown: kvapkyOn ? "~/.local/state/latteos/kvapky/noctalia/settings.toml" : "~/.local/state/latteos/noctalia/settings.toml"
     FileView {
-        path: app.stateHome + "/noctalia/settings.toml"; printErrors: false; watchChanges: true; onFileChanged: reload()
+        path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/latteos/kvapky"; printErrors: false; watchChanges: true
+        onFileChanged: reload()
+        onLoaded: app.kvapkyOn = true
+        onLoadFailed: app.kvapkyOn = false
+    }
+    FileView {
+        // stav Noctalie LatteOS (oddelený od pôvodnej Noctalie, latte-session)
+        path: app.nstate; printErrors: false; watchChanges: true; onFileChanged: reload()
         onLoaded: {
             const t = {}; let sec = "";
             for (const l of text().split("\n")) {
@@ -389,6 +430,30 @@ ShellRoot {
     Cmd {
         id: aiList; command: ["latte-ai", "models"]
         onDone: (out) => app.aiModels = out.split("\n").filter(l => l !== "").map(l => { const p = l.split("\t"); return { id: p[0], state: p[1] || "" }; })
+    }
+    Cmd {
+        id: aiSvc; command: ["latte-ai", "sluzby"]
+        onDone: (out) => app.aiServices = out.split("\n").filter(l => l !== "").map(l => { const p = l.split("\t"); return { id: p[0], name: p[1], inst: p[2] === "1", logged: p[3] === "1", hint: p[4] || "" }; })
+    }
+    Cmd {
+        id: aiProgCmd; property string sid: ""
+        onDone: (out) => { const s = {}; for (const l of out.split("\n")) { const i = l.indexOf("="); if (i > 0) s[l.slice(0, i)] = l.slice(i + 1); }
+                           const all = Object.assign({}, app.aiProg); all[sid] = s; app.aiProg = all; }
+    }
+    // inštalácia / prihlásenie bežia na pozadí: kým beží, Nastavenia obnovujú stav (terminál sa neotvára)
+    property string aiBusy: ""
+    Timer {
+        interval: 1200; repeat: true; running: app.aiBusy !== ""
+        onTriggered: {
+            aiSvc.running = true
+            aiProgCmd.sid = app.aiBusy; aiProgCmd.command = ["latte-ai", "priebeh", app.aiBusy]; aiProgCmd.running = true
+            const st = (app.aiProg[app.aiBusy] || {}).state
+            if (st === "done" || st === "installed" || st === "error") { app.aiBusy = ""; aiStatus.running = true }
+        }
+    }
+    function aiService(sid, action) {
+        app.aiProg = Object.assign({}, app.aiProg, { [sid]: { state: action === "instaluj" ? "installing" : "login", line: action === "instaluj" ? "Sťahujem…" : "Otváram prihlásenie…" } })
+        app.run(["latte-ai", action, sid]); app.aiBusy = sid
     }
     Cmd {
         id: aiAsk; command: ["latte-ai", "ask", "Predstav sa jednou krátkou vetou po slovensky."]
@@ -683,19 +748,19 @@ ShellRoot {
     }
     function storedIn(k) {
         return ({
-            domov: "/run/latteos/mode.toml", motiv: "~/.config/latteos/theme\n~/.config/latteos/theme-mode", pozadie: "~/.config/latteos/tapety.json\n~/.local/state/noctalia/settings.toml [wallpaper]", tapetyonline: "~/.local/share/latteos/tapety",
+            domov: "/run/latteos/mode.toml", motiv: "~/.config/latteos/theme\n~/.config/latteos/theme-mode", pozadie: "~/.config/latteos/tapety.json\n~/.local/state/latteos/noctalia/settings.toml [wallpaper]", tapetyonline: "~/.local/share/latteos/tapety",
             okna: "~/.local/state/latteos/window-mode", vykon: "~/.config/latteos/tier", efekty: "~/.config/latteos/live-wallpaper\n~/.config/latteos/tier",
             start: "/etc/latteos/boot.toml\n/var/lib/latteos/", ai: "~/.config/latteos/ai.toml\n~/.config/latteos/ai-keys (0600)",
-            lista: "~/.local/state/noctalia/settings.toml [bar.main]\n~/.config/latteos/bar-anim, bar-scene, bar-scene-vpravo, bar-stlmenie, mascot", cas: "~/.local/state/noctalia/settings.toml [location]\n~/.config/latteos/clock.conf",
+            lista: app.nstateShown + " [bar.main]\n~/.config/latteos/bar-anim, bar-scene, bar-scene-vpravo, bar-stlmenie, mascot", cas: "~/.local/state/latteos/noctalia/settings.toml [location]\n~/.config/latteos/clock.conf",
             prihlasovanie: "/var/lib/latteos/greeter/greeter.conf", diagnostika: "/var/lib/latteos/greeter/last-crash.log\n/var/lib/latteos/crash-count",
             subory: "~/.config/latteos/subory.json\n~/.config/latteos/tags.json\n~/.config/latteos/subory-tahanie",
-            oznamenia: "~/.local/state/noctalia/settings.toml [notification]",
-            uzamknutie: "~/.local/state/noctalia/settings.toml [idle.behavior.*]",
+            oznamenia: app.nstateShown + " [notification]",
+            uzamknutie: app.nstateShown + " [idle.behavior.*]",
             mojucet: "/var/lib/latteos/greeter/avatars/<meno>.png\n~/.face",
             synchronizacia: "~/.config/rclone/rclone.conf\n~/Cloud/<účet>\nsystemd --user latte-cloud@<účet>",
             zalohy: "~/.config/latteos/backup.conf\n<cieľ>/LatteOS-zaloha-<meno>/<dátum>\n~/.config/systemd/user/latte-backup.timer",
             jazyk: "~/.config/latteos/locale (načíta latte-session)\n/etc/locale.conf (systém)",
-            pristupnost: "~/.local/state/noctalia/settings.toml [accessibility]\n~/.config/latteos/no-animations, cursor-size",
+            pristupnost: app.nstateShown + " [accessibility]\n~/.config/latteos/no-animations, cursor-size",
             klavesnica: "~/.config/latteos/profil-ovladania, numlock\n/usr/share/latteos/hypr/latte/skratky.lua\n~/.config/latteos/hyprland.lua"
         })[k] || dalsie.stored[k] || "—";
     }
@@ -840,7 +905,7 @@ ShellRoot {
         if (managed[k]) return pManaged;
         if (dalsie.pages[k]) return dalsie.pages[k];
         return ({ domov: pDomov, ai: pAi, subory: pSubory, ulozisko: pUlozisko, vykon: pVykon, diagnostika: pDiag,
-                  prihlasovanie: pGreeter, motiv: pMotiv, pozadie: pozadieTab === "online" ? pTapetyOnline : pPozadie, tapetyonline: pTapetyOnline, okna: pOkna, lista: pLista, efekty: pEfekty,
+                  prihlasovanie: pGreeter, motiv: pMotiv, pozadie: pozadieTab === "online" ? pTapetyOnline : pPozadie, tapetyonline: pTapetyOnline, okna: pOkna, lista: pLista, kvapky: pKvapky, efekty: pEfekty,
                   start: pStart, cas: pCas, o: pO, klavesnica: pKlavesy, oznamenia: pOznamenia, pristupnost: pPristupnost,
                   uzamknutie: pUzamknutie, pokrocile: pPokrocile, schranka: pSchranka, mojucet: pUcet, jazyk: pJazyk, zalohy: pZalohy, pouzivatelia: pPouzivatelia, synchronizacia: pCloud })[k] || pPlan;
     }
@@ -908,10 +973,11 @@ ShellRoot {
             Flow {
                 width: parent.width; spacing: 10
                 Repeater {
-                    model: [["lokalne", "Tento počítač", "Ollama, malý model; bez internetu", "device-desktop"],
+                    model: [["predplatne", "Môj účet", "Claude, ChatGPT, Gemini, Copilot — prihlásiš sa menom a heslom, odpovedá priamo v LatteOS", "user"],
+                            ["lokalne", "Tento počítač", "Ollama, malý model; bez internetu", "device-desktop"],
                             ["domaci", "Domáci server", "LM Studio, llama.cpp, Ollama v sieti alebo cez SSH", "server"],
                             ["web", "Prihlásenie v prehliadači", "Claude, ChatGPT, Perplexity, Copilot s tvojím účtom, bez kľúča", "world"],
-                            ["cloud", "Veľké AI (cloud)", "Claude, ChatGPT, Gemini, Mistral — s API kľúčom", "cloud"],
+                            ["cloud", "Veľké AI (cloud)", "Claude, ChatGPT, Gemini, DeepSeek, Mistral, OpenRouter — s API kľúčom", "cloud"],
                             ["ziadna", "Bez AI", "LatteOS AI nikde neponúka (Text Bar, Super+I)", "robot-off"]]
                     Card {
                         required property var modelData
@@ -919,6 +985,57 @@ ShellRoot {
                         onClicked: app.aiSet("provider", modelData[0])
                     }
                 }
+            }
+            // predplatné: všetko klikaním — Inštalovať, Prihlásiť sa (prehliadač, iba meno a heslo), Použiť
+            Column {
+                visible: app.ai.provider === "predplatne"; spacing: 10; width: parent.width
+                Heading { text: "TVOJ ÚČET" }
+                Repeater {
+                    model: app.aiServices
+                    Column {
+                        id: svc
+                        required property var modelData
+                        readonly property var prog: app.aiProg[modelData.id] || ({})
+                        readonly property bool busy: app.aiBusy === modelData.id
+                        width: parent.width; spacing: 6
+                        Card {
+                            width: parent.width; height: 64
+                            glyph: modelData.logged ? "check" : (modelData.inst ? "login" : "download")
+                            title: modelData.name + (app.ai.cli === modelData.id ? "  ·  používa sa" : "")
+                            sub: svc.busy || svc.prog.state === "error" ? (svc.prog.line || "…")
+                                 : modelData.logged ? "Prihlásený — klikni a LatteOS bude odpovedať cez " + modelData.name
+                                 : modelData.inst ? "Nainštalované · treba sa raz prihlásiť (" + modelData.hint + ")"
+                                 : "Klikni Inštalovať — stiahne sa oficiálny nástroj " + modelData.name
+                            selected: app.ai.cli === modelData.id
+                            onClicked: if (modelData.logged) app.aiSet("predplatne", modelData.id)
+                        }
+                        Row {
+                            spacing: 8
+                            Button { visible: !modelData.inst; label: svc.busy ? "Inštalujem…" : "Inštalovať"; glyph: "download"; primaryStyle: true
+                                     onClicked: if (!svc.busy) app.aiService(modelData.id, "instaluj") }
+                            Button { visible: modelData.inst && !modelData.logged; label: svc.busy ? "Čakám na prehliadač…" : "Prihlásiť sa"; glyph: "login"; primaryStyle: true
+                                     onClicked: if (!svc.busy) app.aiService(modelData.id, "prihlas") }
+                            // namiesto predplatného kľúč API tej istej služby (Copilot API nemá)
+                            Button { visible: !modelData.logged && modelData.id !== "copilot" && !svc.busy; label: "Mám kľúč API"; glyph: "key"
+                                     onClicked: { app.run(["sh", "-c", "latte-ai set cloud \"$1\" && latte-ai set provider cloud", "sh",
+                                                           ({ claude: "anthropic", codex: "openai", gemini: "gemini" })[modelData.id]], "AI: kľúč API pre " + modelData.name)
+                                                  aiRefresh.restart() } }
+                            Button { visible: modelData.logged && app.ai.cli !== modelData.id; label: "Použiť"; glyph: "check"; primaryStyle: true
+                                     onClicked: app.aiSet("predplatne", modelData.id) }
+                            Button { visible: !!svc.prog.url && svc.busy; label: "Otvoriť prihlásenie znova"; glyph: "world"
+                                     onClicked: app.run(["xdg-open", svc.prog.url]) }
+                            Button { visible: modelData.logged; label: "Odhlásiť"; glyph: "logout"
+                                     onClicked: { app.run(["latte-ai", "odhlas", modelData.id], modelData.name + ": odhlásené"); aiSvc.running = true; aiRefresh.restart() } }
+                            // pod kapotou: iba na požiadanie (pokročilý používateľ, správca)
+                            Button { visible: modelData.inst || svc.busy || svc.prog.state === "error"; label: "Zobraziť terminál"; glyph: "terminal-2"
+                                     onClicked: app.run(["latte-ai", "terminal", modelData.id]) }
+                        }
+                        Text { visible: !!svc.prog.code && svc.busy; text: "Kód pre prehliadač:  " + (svc.prog.code || "")
+                               color: theme.primary; font { family: theme.fontMono || theme.fontUi; pixelSize: 20; weight: Font.Bold } }
+                    }
+                }
+                Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 12 }
+                       text: "Ako aplikácia v mobile alebo rozšírenie vo VS Code: LatteOS použije oficiálny nástroj služby a tvoje predplatné. Meno a heslo píšeš iba na stránke služby — LatteOS ich nevidí. Nástroj beží v prázdnom priečinku a nevidí tvoje súbory, iba prílohy, ktoré mu pošleš." }
             }
             // webová AI s prihlásením
             Column {
@@ -947,7 +1064,7 @@ ShellRoot {
                 visible: app.ai.provider === "cloud"; spacing: 10; width: parent.width
                 Heading { text: "SLUŽBA" }
                 Segments {
-                    options: [["anthropic", "Claude"], ["openai", "ChatGPT"], ["gemini", "Gemini"], ["mistral", "Mistral"]]
+                    options: [["anthropic", "Claude"], ["openai", "ChatGPT"], ["gemini", "Gemini"], ["deepseek", "DeepSeek"], ["mistral", "Mistral"], ["openrouter", "OpenRouter"]]
                     value: app.ai.target || ""
                     onPicked: (v) => app.aiSet("cloud", v)
                 }
@@ -957,9 +1074,9 @@ ShellRoot {
                     onCommitted: (t) => { if (t !== "") { app.run(["latte-ai", "key", app.ai.target || "anthropic", t], "Kľúč uložený"); text = ""; aiRefresh.restart(); } }
                 }
             }
-            Heading { text: "MODEL"; visible: app.ai.provider !== "cloud" }
+            Heading { text: "MODEL"; visible: app.ai.provider !== "cloud" && app.ai.provider !== "predplatne" && app.ai.provider !== "web" }
             Flow {
-                visible: app.ai.provider !== "cloud"
+                visible: app.ai.provider !== "cloud" && app.ai.provider !== "predplatne" && app.ai.provider !== "web"
                 width: parent.width; spacing: 8
                 Card { width: 220; height: 58; title: "Automaticky"; sub: "načítaný na serveri"; selected: false; onClicked: app.aiSet("model", "") }
                 Repeater {
@@ -1232,11 +1349,13 @@ ShellRoot {
                     width: parent.width; spacing: 8
                     Repeater {
                         model: [["https://www.aktuality.sk/rss/", "Aktuality.sk"], ["https://spravy.stvr.sk/feed/", "Správy STVR"], ["https://www.root.cz/rss/clanky/", "Root.cz"], ["https://www.phoronix.com/rss.php", "Phoronix"]]
-                        Card { required property var modelData; width: 170; height: 48; title: modelData[1]; sub: ""; selected: app.greeterConf.rss_url === modelData[0]
-                               onClicked: { app.setGreeter("rss_url", modelData[0]); app.setGreeter("panel_title", modelData[1]); } }
+                        Card { required property var modelData; width: 170; height: 48; title: modelData[1]; sub: ""; selected: app.rssList().indexOf(modelData[0]) >= 0
+                               onClicked: app.toggleRss(modelData[0]) }
                     }
                 }
-                Field { text: app.greeterConf.rss_url; placeholder: "vlastný RSS odkaz"; onCommitted: (t) => { if (t !== "" && t !== app.greeterConf.rss_url) app.setGreeter("rss_url", t); } }
+                Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 12 }
+                       text: i18n.tr("You can pick several sources; their headlines alternate under the surface of the login screen. Own RSS links: separate them with a space.") }
+                Field { text: app.greeterConf.rss_url; placeholder: i18n.tr("own RSS links"); onCommitted: (t) => { if (t !== "" && t !== app.greeterConf.rss_url) app.setGreeter("rss_url", t); } }
             }
             Column {
                 visible: app.greeterConf.panel === "text"; spacing: 8
@@ -1797,6 +1916,85 @@ ShellRoot {
         }
     }
     Component {
+        id: pKvapky
+        Column {
+            id: kvp
+            spacing: 12
+            // formulár vlastnej kvapky
+            property string nName: ""; property string nIcon: ""; property string nClick: ""; property string nText: ""; property int nEvery: 10
+            Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 13 }
+                   text: "Kvapky plochy Goo: zobraziť alebo skryť, veľkosť (to isté robí koliesko nad kvapkou) a návrat na pôvodné miesto. Zmena sa prejaví do dvoch sekúnd." }
+            Heading { text: "KVAPKY" }
+            Repeater {
+                model: app.gooEngine
+                    ? [["goobar", "GooBar", i18n.tr("Main bar and window manager"), "app-window", true],
+                       ["goopower", "GooPower", i18n.tr("Power, session and battery"), "power", true],
+                       ["lensgoo", "LensGoo", i18n.tr("Launcher, search and AI"), "search", true],
+                       ["queengoo", "QueenGoo", i18n.tr("App Manager and Device Manager"), "crown", false],
+                       ["clockgoo", "ClockGoo", i18n.tr("Time, calendar, notifications and well-being"), "clock", false]]
+                    : [["zt", "TimeGoo", "Hodiny, Štart a spúšťač, stopky, minútka", "clock"],
+                       ["zp", "PowerGoo", "Vypínač a batéria", "power"],
+                       ["zd", "DaNoGoo", "Dátum, počasie, upozornenia, kalendár", "calendar"]]
+                Column {
+                    required property var modelData
+                    readonly property bool base: app.gooEngine ? modelData[4] === true : modelData[0] === "zp"   // základ shellu: nedá sa skryť
+                    readonly property bool hid: !base && app.kv.skryte.indexOf(modelData[0]) >= 0
+                    width: parent.width; spacing: 6
+                    Card { width: parent.width; height: 64; glyph: modelData[3]; title: modelData[1] + (parent.hid ? "  ·  skrytá" : (parent.base ? "  ·  základ shellu" : "")); sub: modelData[2]; selected: !parent.hid
+                           onClicked: if (!parent.base) app.kvToggle(modelData[0], modelData[1]) }
+                    Row {
+                        spacing: 10; visible: !parent.hid
+                        Stepper { label: "Veľkosť"; unit: " %"; step: app.gooEngine ? 10 : 15; min: app.gooEngine ? 50 : 100; max: 220
+                                  value: Math.round(100 * (parseFloat((app.kv.zoom || {})[modelData[0]]) || 1))
+                                  onStepped: (v) => { const k = JSON.parse(JSON.stringify(app.kv)); k.zoom = k.zoom || {}; k.zoom[modelData[0]] = v / 100; app.kvSave(k, modelData[1] + ": " + v + " %"); } }
+                        Button { label: "Vrátiť na miesto"; glyph: "arrow-back-up"
+                                 onClicked: { const k = JSON.parse(JSON.stringify(app.kv)); k.reset = { k: modelData[0], t: Date.now() }; app.kvSave(k, modelData[1] + " sa vráti na pôvodné miesto"); } }
+                    }
+                }
+            }
+            Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 12 }
+                   text: app.gooEngine
+                       ? i18n.tr("GooBar, GooPower and LensGoo are the core of the shell and cannot be hidden (their size can be changed). QueenGoo and ClockGoo are optional: click a card to hide or show it.")
+                       : "Goobar (lišta s oknami), QueenGoo a PowerGoo tvoria základ shellu — spodnú lištu — a nedajú sa skryť (dá sa im zmeniť veľkosť). TimeGoo a DaNoGoo skryješ alebo ukážeš kliknutím na kartu." }
+            Toggle { visible: app.gooEngine; on: app.kv.zive !== false
+                     label: i18n.tr("Lively behaviour: when you are away, drops play and the surface shows rain, snow and wind as outside")
+                     onToggled: { const k = JSON.parse(JSON.stringify(app.kv)); k.zive = !(app.kv.zive !== false); app.kvSave(k, i18n.tr("Saved")); } }
+            Heading { text: "CHATGOO (DOPLNOK PRE BEEPER)"; topPadding: 6 }
+            Segments {
+                options: [["kvapka", "Kvapka ChatGoo — Beeper sa minimalizuje do nej, správy okolo"], ["lista", "Bez kvapky — ikona Beepera v rohovej lište Noctalie"]]
+                value: app.kv.chatgoo || "kvapka"
+                onPicked: (v) => { const k = JSON.parse(JSON.stringify(app.kv)); k.chatgoo = v; app.kvSave(k, v === "kvapka" ? "ChatGoo ako kvapka" : "Beeper v rohovej lište"); }
+            }
+            Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 12 }
+                   text: "ChatGoo nie je nutná — je to doplnok. Beeper si nainštaluješ sám (beeper.com, Linux AppImage); kvapka sa ukáže, keď Beeper beží." }
+            Heading { text: "VLASTNÉ KVAPKY"; topPadding: 6 }
+            Repeater {
+                model: app.kv.vlastne || []
+                Row {
+                    required property var modelData
+                    spacing: 8
+                    Card { width: 420; height: 58; glyph: "point"; title: modelData.nazov; sub: (modelData.klik || "") + (modelData.text ? "  ·  text: " + modelData.text : "") }
+                    Button { label: "Odstrániť"; glyph: "trash"; anchors.verticalCenter: parent.verticalCenter
+                             onClicked: { const k = JSON.parse(JSON.stringify(app.kv)); k.vlastne = k.vlastne.filter(x => x.id !== modelData.id); app.kvSave(k, "Kvapka odstránená: " + modelData.nazov); } }
+                }
+            }
+            Text { width: parent.width; wrapMode: Text.WordWrap; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 12 }
+                   text: "Vlastná kvapka sa správa ako kvapky widgetov: ťahaním ju presunieš k ľubovoľnému okraju, klik spustí príkaz, pravý klik otvorí tieto nastavenia. Text (napr. teplota, počet správ) dodá príkaz — prvý riadok, najviac 8 znakov." }
+            Field { placeholder: "Názov (napr. Kalkulačka)"; onEdited: (t) => kvp.nName = t }
+            Field { placeholder: "Ikona — názov z témy ikon (napr. accessories-calculator) alebo cesta k obrázku"; onEdited: (t) => kvp.nIcon = t }
+            Field { placeholder: "Príkaz po kliknutí (napr. gnome-calculator)"; onEdited: (t) => kvp.nClick = t }
+            Field { placeholder: "Príkaz pre text na kvapke (nepovinné, napr. date +%H:%M)"; onEdited: (t) => kvp.nText = t }
+            Stepper { label: "Obnoviť text každých"; unit: " s"; value: kvp.nEvery; step: 5; min: 5; max: 600; onStepped: (v) => kvp.nEvery = v }
+            Button { label: "Pridať kvapku"; glyph: "plus"; primaryStyle: true
+                     onClicked: {
+                         if (kvp.nName.trim() === "" || kvp.nClick.trim() === "") { app.status = "Vyplň aspoň názov a príkaz po kliknutí"; return; }
+                         const k = JSON.parse(JSON.stringify(app.kv)); k.vlastne = k.vlastne || [];
+                         k.vlastne.push({ id: String(Date.now()), nazov: kvp.nName.trim(), ikona: kvp.nIcon.trim(), klik: kvp.nClick.trim(), text: kvp.nText.trim(), obnova: kvp.nEvery });
+                         app.kvSave(k, "Pridaná kvapka: " + kvp.nName.trim() + " (dole na okraji, ťahaním ju presunieš)");
+                     } }
+        }
+    }
+    Component {
         id: pLista
         Column {
             spacing: 12
@@ -2055,7 +2253,7 @@ ShellRoot {
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
                     Text { text: "LatteOS"; color: theme.fg; font { family: theme.fontDisplay; pixelSize: 26; weight: Font.DemiBold } }
-                    Text { text: "vývojárska verzia · gamerdistro"; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 13 } }
+                    Text { text: "LatteOS GOO · vývojárska verzia"; color: theme.fgDim; font { family: theme.fontUi; pixelSize: 13 } }
                 }
             }
             Repeater {

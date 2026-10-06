@@ -5,10 +5,11 @@ local T = {}
 -- efekty: blur, tiene, žiara aktívneho okna (Hyprland 0.56), animácie a ich rýchlosť
 T.levels = {
     plny      = { blur = { size = 6, passes = 2 }, shadow = 22, glow = true,  anim = 1.0, orbit = true },
-    standard  = { blur = { size = 4, passes = 1 }, shadow = 14, glow = true,  anim = 1.0, orbit = true },
+    -- obiehajúci lem (borderangle loop) kreslí každú snímku: na RX 640 pri 144 Hz ~20 % jadra → iba Plný
+    standard  = { blur = { size = 4, passes = 1 }, shadow = 14, glow = true,  anim = 1.0, orbit = false },
     usporny   = { blur = nil,                      shadow = nil, glow = false, anim = 1.6 },
     minimalny = { blur = nil,                      shadow = nil, glow = false, anim = nil },
-    -- VM bez GPU: každý pohyb stojí CPU (setup/f1/RESULTS.md) → bez efektov a animácií
+    -- VM bez GPU: každý pohyb stojí CPU (docs_zaloha/2026-09-23-f1-merania-vm.md) → bez efektov a animácií
     softver   = { blur = nil,                      shadow = nil, glow = false, anim = nil },
 }
 
@@ -35,6 +36,8 @@ function T.apply(name, colors)
         local s = t.anim   -- > 1 = rýchlejšie (kratšie) animácie
         hl.curve("latteOut",   { type = "bezier", points = { {0.23, 1}, {0.32, 1} } })
         hl.curve("latteSpring", { type = "spring", mass = 1, stiffness = 238, dampening = 24 })
+        -- latte.tape_motion ho pri stupni bez animácií vypína; Hyprland 0.56 chce speed aj pri zapnutí
+        hl.animation({ leaf = "global", enabled = true, speed = 6 / s, bezier = "latteOut" })
         hl.animation({ leaf = "windows",    enabled = true, speed = 4.8 / s, spring = "latteSpring" })
         hl.animation({ leaf = "windowsIn",  enabled = true, speed = 4.1 / s, spring = "latteSpring", style = "popin 90%" })
         hl.animation({ leaf = "windowsOut", enabled = true, speed = 1.5 / s, bezier = "latteOut", style = "popin 90%" })

@@ -1,0 +1,13 @@
+{
+  "id": "kalkulacka",
+  "nazov": "Kalkulačka",
+  "ikona": "calculator",
+  "popis": "Klik: kalkulačka · pravé: dnešný dátum",
+  "povaha": "zvedava",
+  "akcie": {
+    "klik": { "aplikacia": "org.gnome.Calculator" },
+    "pravy": { "vystup": "date '+%A %-d. %B'" },
+    "stredny": "domov",
+    "koliesko": "velkost"
+  }
+}

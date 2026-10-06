@@ -1,0 +1,25 @@
+#!/bin/sh
+# latte-zamok — zámok obrazovky LatteOS GOO: scéna prihlásenia ako `kind: lock` (session/goo/zamok.plm, vygenerovaná
+# z login.plm). Kompozitor ručí, že kým zámok trvá, nič iné nie je vidno ani sa nedá ovládať; heslo overí systém
+# (PAM, pleamar `auth.check`). Win+L, GooPower › Zamknúť.
+# Poistka: keby scéna spadla so zamknutou reláciou, Hyprland zámok drží ďalej a prevezme ho zámok Noctalie
+# (misc.allow_session_lock_restore v hyprland.lua). Bez scény alebo pleamaru rovno zámok Noctalie.
+dir="${LATTE_GOO_DIR:-/usr/share/latteos/goo}"
+pgrep -u "$(id -u)" -f 'pleamar --scene zamok\.plm' >/dev/null && exit 0      # už zamknuté
+if ! command -v pleamar >/dev/null || ! [ -f "$dir/zamok.plm" ]; then
+    exec noctalia msg session lock
+fi
+log="${XDG_STATE_HOME:-$HOME/.local/state}/latteos/zamok.log"
+mkdir -p "$(dirname "$log")"
+cd "$dir" || exec noctalia msg session lock
+# zámok má jedno rozloženie pre všetky monitory: rozmer najmenšieho (logika ho dá scéne)
+rozmer=$(hyprctl -j monitors 2>/dev/null | python3 -c 'import json, sys
+m = json.load(sys.stdin)
+w = lambda x: int(x["width"] / x.get("scale", 1))
+hlavny = next((x for x in m if x["x"] == 0 and x["y"] == 0), m[0])
+print(min(w(x) for x in m), min(int(x["height"] / x.get("scale", 1)) for x in m), w(hlavny))' 2>/dev/null)
+set -- $rozmer
+LATTE_ZAMOK_W="${1:-}" LATTE_ZAMOK_H="${2:-}" LATTE_ZAMOK_MW="${3:-}" LATTE_LOGIN=zamok pleamar --scene zamok.plm --no-hud > "$log" 2>&1
+rc=$?
+[ $rc -eq 0 ] || noctalia msg session lock
+exit $rc

@@ -1,0 +1,51 @@
+diff --git a/src/shell/bar/bar.cpp b/src/shell/bar/bar.cpp
+index f1f683a..93e9c3e 100644
+--- a/src/shell/bar/bar.cpp
++++ b/src/shell/bar/bar.cpp
+@@ -2415,6 +2415,10 @@ void Bar::createInstance(const WaylandOutput& output, std::size_t barIndex, cons
+   });
+   instance->surface->setPrepareFrameCallback([this, inst](bool needsUpdate, bool needsLayout) {
+     prepareFrame(*inst, needsUpdate, needsLayout);
++    // capsules move and resize with their content: keep the capsule-only blur region in sync
++    if (needsLayout && inst->barConfig.backgroundOpacity <= 0.01F) {
++      applyBarCompositorBlur(*inst);
++    }
+   });
+   instance->surface->setFrameTickCallback([inst](float deltaMs) {
+     tickWidgets(inst->startWidgets, deltaMs);
+@@ -3178,6 +3182,35 @@ void Bar::applyBarCompositorBlur(BarInstance& instance) const {
+   if (instance.bg == nullptr) {
+     return;
+   }
++  // Transparent bar with capsules ("islands"): blur only behind the capsules. Blurring the whole
++  // bar rect leaves a frosted strip across the full width even where nothing is drawn.
++  if (instance.barConfig.backgroundOpacity <= 0.01F) {
++    std::vector<InputRect> strips;
++    for (const auto* runs : {&instance.startCapsuleRuns, &instance.centerCapsuleRuns, &instance.endCapsuleRuns}) {
++      for (const auto& run : *runs) {
++        if (run.bg == nullptr || !run.hasPaintedCapsuleBackground || run.bg->width() <= 0.0F) {
++          continue;
++        }
++        float cx = 0.0F;
++        float cy = 0.0F;
++        Node::absolutePosition(run.bg, cx, cy);
++        const float w = run.bg->width();
++        const float h = run.bg->height();
++        const float r = run.spec.radius.has_value() ? *run.spec.radius * run.contentScale : std::min(w, h) * 0.5F;
++        auto part = Surface::tessellateRoundedRect(
++            static_cast<int>(std::lround(cx)), static_cast<int>(std::lround(cy)), static_cast<int>(std::lround(w)),
++            static_cast<int>(std::lround(h)), std::min(r, std::min(w, h) * 0.5F)
++        );
++        strips.insert(strips.end(), part.begin(), part.end());
++      }
++    }
++    if (strips.empty()) {
++      instance.surface->clearBlurRegion();
++    } else {
++      instance.surface->setBlurRegion(strips);
++    }
++    return;
++  }
+   float absX = 0.0F;
+   float absY = 0.0F;
+   Node::absolutePosition(instance.bg, absX, absY);

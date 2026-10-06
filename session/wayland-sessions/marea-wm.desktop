@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Marea complete (pleamar-wm, k4ditano)
+Name[sk]=Marea kompletná (pleamar-wm, k4ditano)
+Comment=The complete original by k4ditano: pleamar-wm compositor, Marea, his portals and profile — kept apart from LatteOS
+Comment[sk]=Kompletný originál od k4ditano: kompozitor pleamar-wm, Marea, jeho portály a profil — oddelené od LatteOS
+Exec=/usr/bin/latte-marea wm
+Type=Application
+DesktopNames=pleamar

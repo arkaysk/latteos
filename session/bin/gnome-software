@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# gnome-software → App Manager LatteOS. GTK „Otvoriť pomocou…“ › „Nájsť viac v aplikácii Softvér“ a iné programy
+# spúšťajú gnome-software, ktorý v LatteOS nie je (bughunt/bug001.png: „Adresár alebo súbor neexistuje“).
+# Inštaluje sa do /usr/local/bin iba vtedy, keď skutočný gnome-software chýba.
+#   gnome-software --search=application/zip · --search TEXT · --details=ID · --mode=updates|installed|overview
+q="" detail="" mode=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --search=*) q="${1#*=}" ;;
+        --search) q="$2"; shift ;;
+        --details=*|--details-pkg=*) detail="${1#*=}" ;;
+        --details|--details-pkg) detail="$2"; shift ;;
+        --mode=*) mode="${1#*=}" ;;
+        --mode) mode="$2"; shift ;;
+    esac
+    shift
+done
+# typ súboru (application/x-7z-compressed) → hľadané slovo (7z)
+case "$q" in */*) q="${q#*/}"; q="${q#x-}"; q="${q#vnd.}"; q="${q%-compressed*}" ;; esac
+if [ -n "$detail" ]; then exec latte-app aplikacie detail "$detail"; fi
+if [ -n "$q" ]; then exec latte-app aplikacie hladat "$q"; fi
+case "$mode" in
+    updates) exec latte-app aplikacie aktualizacie ;;
+    installed) exec latte-app aplikacie nainstalovane ;;
+esac
+exec latte-app aplikacie

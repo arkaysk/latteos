@@ -1,0 +1,1186 @@
+{
+  "auth": {
+    "fingerprint": {
+      "disconnected": "Snímač odtlačkov prstov je odpojený",
+      "error": "Chyba overenia odtlačkom prsta",
+      "no-match": "Odtlačok prsta sa nezhoduje",
+      "not-centered": "Polož prst do stredu a skús znova",
+      "present": "Čítam odtlačok prsta…",
+      "ready": "Polož prst na snímač",
+      "remove-and-retry": "Zdvihni prst a skús znova",
+      "retry": "Prilož prst ešte raz",
+      "swipe-too-short": "Ťah bol príliš krátky, skús znova",
+      "too-many-attempts": "Odtlačok prsta je vypnutý (príliš veľa pokusov)"
+    },
+    "pam": {
+      "authentication-failed": "Overenie zlyhalo",
+      "start-failed": "PAM sa nepodarilo spustiť",
+      "user-unavailable": "Nedá sa zistiť aktuálny používateľ"
+    },
+    "polkit": {
+      "authenticate": "Overiť",
+      "authenticating": "Overujem…",
+      "default-message": "Vyžaduje sa overenie",
+      "invalid-password": "Nesprávne heslo",
+      "password-placeholder": "Heslo",
+      "title": "Vyžaduje sa overenie"
+    }
+  },
+  "bar": {
+    "annotate": {
+      "capture-new-region": "Zachytiť novú oblasť (zahodí aktuálnu úpravu)",
+      "close": "Zavrieť bez odovzdania (Esc)",
+      "color-black": "Čierna",
+      "color-blue": "Modrá",
+      "color-green": "Zelená",
+      "color-orange": "Oranžová",
+      "color-purple": "Fialová",
+      "color-red": "Červená",
+      "color-white": "Biela",
+      "color-yellow": "Žltá",
+      "copy": "Kopírovať upravený obrázok (Ctrl+C)",
+      "cursor": "Zobraziť ukazovateľ zachytený s obrazovkou (p)",
+      "cursor-capture-failed": "Ukazovateľ sa nedá prepnúť: kompozitor neposkytol samostatný obrázok kurzora",
+      "cursor-live": "Na zmenu zachyteného ukazovateľa najprv zmraz obrazovku (F)",
+      "cursor-not-captured": "Ukazovateľ sa nedá prepnúť: tento kompozitor nepodporuje samostatné zachytenie kurzora",
+      "done": "Použiť nastavenia snímky (Enter)",
+      "fill-off": "Výplň tvaru: vypnutá",
+      "fill-on": "Výplň tvaru: zapnutá",
+      "freeze": "Zmraziť obrazovku pod kreslením (f)",
+      "move-toolbar": "Ťahaním presunieš panel nástrojov",
+      "redo": "Znova (Ctrl+Shift+Z)",
+      "save": "Uložiť upravený obrázok (Ctrl+S)",
+      "size-advanced": "Jemné nastavenie veľkosti",
+      "size-decrease": "Tenšie ([)",
+      "size-increase": "Hrubšie (])",
+      "size-large": "Veľké",
+      "size-medium": "Stredné",
+      "size-small": "Malé",
+      "tool-arrow": "Šípka (a) · so Shiftom prichytí uhol",
+      "tool-blur": "Rozmazať oblasť (u)",
+      "tool-brush": "Štetec (b)",
+      "tool-circle": "Elipsa (o) · so Shiftom kruh",
+      "tool-crop": "Orezať výstup (c)",
+      "tool-eraser": "Guma (e)",
+      "tool-highlighter": "Zvýrazňovač (h)",
+      "tool-line": "Čiara (l) · so Shiftom prichytí uhol",
+      "tool-move": "Presunúť poznámku (m)",
+      "tool-numbering": "Číslovaná značka (n)",
+      "tool-rectangle": "Obdĺžnik (s) · so Shiftom štvorec",
+      "tool-text": "Text (t)",
+      "undo": "Späť (Ctrl+Z)"
+    },
+    "screenshot": {
+      "annotate-export-failed": "Upravený obrázok sa nepodarilo vytvoriť",
+      "choose-display": "Vyber obrazovku",
+      "confirm-region": "{copy} kopíruje · {save} uloží · Enter alebo medzerník predvolené · {cancel} zruší · ťahaním vyberieš znova",
+      "fullscreen": "Celá obrazovka",
+      "overlay-alloc-failed": "Prekryv snímky sa nedá zobraziť (došla videopamäť?)",
+      "region": "Vybrať oblasť"
+    },
+    "widgets": {
+      "active-window": {
+        "no-active-window": "Žiadne aktívne okno"
+      },
+      "bluetooth": {
+        "connected": "Pripojené"
+      },
+      "brightness": {
+        "brightness": "Jas",
+        "display": "Obrazovka",
+        "unavailable": "Jas sa nedá ovládať"
+      },
+      "lock-keys": {
+        "caps": "Caps",
+        "caps-short": "C",
+        "num": "Num",
+        "num-short": "N",
+        "scroll": "Scroll",
+        "scroll-short": "S"
+      },
+      "media": {
+        "nothing-playing": "Nič nehrá",
+        "playing": "Hrá"
+      },
+      "network": {
+        "active": "Aktívne",
+        "band": "Pásmo",
+        "cellular": "Mobilná sieť",
+        "connected": "Pripojené",
+        "connecting": "Pripája sa",
+        "download": "Sťahovanie",
+        "interface": "Rozhranie",
+        "ip": "IP",
+        "network": "Sieť",
+        "networks": "Siete",
+        "networks-count": "{count} sieť",
+        "networks-count-plural": "Siete: {count}",
+        "no": "Nie",
+        "not-connected": "Nepripojené",
+        "off": "Vypnuté",
+        "on": "Zapnuté",
+        "operator": "Operátor",
+        "scanning": "Hľadám siete",
+        "signal": "Signál",
+        "technology": "Technológia",
+        "upload": "Odosielanie",
+        "vpn": "VPN",
+        "wan-ip": "Verejná IP",
+        "wifi": "Wi-Fi",
+        "wired": "Káblové",
+        "yes": "Áno"
+      },
+      "privacy": {
+        "camera": "Kamera",
+        "microphone": "Mikrofón",
+        "screen-sharing": "Zdieľanie obrazovky"
+      },
+      "scripted": {
+        "reload-failed": "Skript sa nepodarilo znova načítať",
+        "reloaded": "Skript znova načítaný"
+      },
+      "sysmon": {
+        "cpu": "CPU",
+        "cpu-freq": "Frekvencia CPU",
+        "cpu-temp": "Teplota CPU",
+        "disk": "Disk",
+        "disk-free": "Voľné na disku",
+        "disk-free-pct": "Voľné na disku %",
+        "disk-used": "Obsadené na disku",
+        "disk-used-pct": "Obsadené na disku %",
+        "download": "Sťahovanie",
+        "gpu-temp": "Teplota GPU",
+        "gpu-usage": "Využitie GPU",
+        "gpu-vram": "Pamäť GPU",
+        "ram": "RAM",
+        "swap": "Swap",
+        "system": "Systém",
+        "upload": "Odosielanie"
+      },
+      "volume": {
+        "device": "Zariadenie",
+        "mic": "Mikrofón",
+        "volume": "Hlasitosť"
+      },
+      "weather": {
+        "default": "Počasie",
+        "error": "Chyba počasia",
+        "loading": "Počasie…",
+        "no-location": "Bez polohy",
+        "off": "Počasie vypnuté",
+        "tooltip": {
+          "condition": "Stav",
+          "feels-like": "Pocitovo",
+          "high": "Max.",
+          "humidity": "Vlhkosť",
+          "low": "Min.",
+          "sunrise": "Východ slnka",
+          "sunset": "Západ slnka",
+          "temperature": "Teplota",
+          "uv": "UV index",
+          "wind": "Vietor"
+        }
+      }
+    }
+  },
+  "clipboard": {
+    "actions": {
+      "clear-all": "Vymazať všetko",
+      "delete-item": "Odstrániť položku",
+      "keep-pinned": "Ponechať pripnuté"
+    },
+    "confirm": {
+      "clear-desc": "Vyber, či sa majú pripnuté položky ponechať.",
+      "clear-desc-all-pinned": "Všetky položky sú pripnuté. Všetky odstrániš cez Vymazať všetko.",
+      "clear-desc-no-pinned": "Toto odstráni všetky položky z histórie schránky.",
+      "clear-title": "Vymazať históriu schránky?",
+      "delete-desc": "Toto odstráni vybranú položku z histórie schránky.",
+      "delete-title": "Odstrániť položku schránky?"
+    },
+    "empty": {
+      "history-message": "História schránky neobsahuje žiadne položky.",
+      "history-title": "História schránky je prázdna",
+      "no-matches-message": "Filtru nezodpovedá žiadna položka.",
+      "no-matches-title": "Nič sa nenašlo"
+    },
+    "entry": {
+      "image": "Obrázok",
+      "title": "Položka schránky"
+    },
+    "filter-placeholder": "Filtrovať schránku…",
+    "preview": {
+      "empty-text-payload": "(prázdny text)",
+      "image-title": "Obrázok v schránke",
+      "loading": "Načítavam náhľad…",
+      "text-title": "Text v schránke",
+      "truncated": "… skrátené"
+    },
+    "title": "Schránka"
+  },
+  "common": {
+    "actions": {
+      "apply": "Použiť",
+      "cancel": "Zrušiť"
+    },
+    "states": {
+      "auto": "Automaticky",
+      "custom": "Vlastné",
+      "inherit": "Zdediť",
+      "off": "Vypnuté"
+    }
+  },
+  "control-center": {
+    "audio": {
+      "application-volumes": "Hlasitosť aplikácií",
+      "choose-effects-profile": "Vyber profil",
+      "default-device": "Predvolené zariadenie",
+      "effects-profile": "Efekty",
+      "input-device-prefix": "Vstup",
+      "no-application-audio": "Žiadny zvuk aplikácií",
+      "no-application-audio-body": "Žiadna aplikácia práve neprehráva zvuk.",
+      "no-input-devices": "Žiadne vstupné zariadenia",
+      "no-input-devices-body": "Nie je dostupný žiadny zdroj nahrávania.",
+      "no-input-selected": "Nie je vybraný vstup",
+      "no-output-devices": "Žiadne výstupné zariadenia",
+      "no-output-devices-body": "Nie je dostupný žiadny výstup prehrávania.",
+      "no-output-selected": "Nie je vybraný výstup",
+      "output-device-prefix": "Výstup",
+      "unavailable-body": "PipeWire nebeží.",
+      "unavailable-title": "Zvuk nie je dostupný"
+    },
+    "bluetooth": {
+      "accept": "Prijať",
+      "address": "Adresa",
+      "auto-reconnect": "Automaticky pripojiť",
+      "bluetooth": "Bluetooth",
+      "enter-code": "Zadaj kód",
+      "no-devices": "Žiadne zariadenia. Spusti hľadanie zariadení Bluetooth v okolí.",
+      "off": "Bluetooth je vypnutý",
+      "pair-title": "Spárovať {device}",
+      "pairing-detail": {
+        "authorize": "Prijať žiadosť o spárovanie?",
+        "authorize-service": "Povoliť prístup k službe {uuid}?",
+        "confirm": "Potvrď, že sa tento kód zhoduje s kódom na zariadení:",
+        "display-passkey": "Zadaj tento kód na zariadení:",
+        "display-pin": "Zadaj tento PIN na zariadení:",
+        "passkey": "Zadaj kód zobrazený na zariadení:",
+        "pin-code": "Zadaj PIN zobrazený na zariadení:"
+      },
+      "reject": "Odmietnuť",
+      "rfkill-blocked": "Bluetooth je zablokovaný systémom. Zapnutím blokovanie zrušíš.",
+      "sections": {
+        "available": "Dostupné",
+        "connected": "Pripojené",
+        "paired": "Spárované"
+      },
+      "unavailable": "Služba Bluetooth nie je dostupná",
+      "unknown-device": "Neznáme zariadenie",
+      "visible": "Viditeľné pre zariadenia v okolí"
+    },
+    "calendar": {
+      "all-day": "Celý deň",
+      "events": "Udalosti",
+      "no-events": "Žiadne udalosti.",
+      "today": "Dnes",
+      "toggle-events-card": "Zobraziť/skryť udalosti"
+    },
+    "display": {
+      "disabled": "Vypnutá",
+      "no-displays": "Žiadne monitory",
+      "rescan": "Znova vyhľadať monitory DDC/CI",
+      "unknown-resolution": "Neznáme rozlíšenie"
+    },
+    "home": {
+      "avatar-error-title": "Avatar sa nezmenil",
+      "media": {
+        "idle": "Nečinné",
+        "no-active-player": "Žiadny aktívny prehrávač",
+        "nothing-playing": "Nič nehrá",
+        "paused": "Pozastavené",
+        "playback-unavailable": "Prehrávanie nie je dostupné",
+        "playing": "Hrá",
+        "unavailable": "Nedostupné",
+        "unknown-artist": "Neznámy interpret",
+        "unknown-track": "Neznáma skladba"
+      },
+      "select-avatar": "Vybrať avatar",
+      "unknown": "neznáme",
+      "uptime": "Beží – {uptime}",
+      "weather": {
+        "data-unavailable": "Údaje o počasí nie sú dostupné.",
+        "fetching": "Načítavam predpoveď…"
+      }
+    },
+    "media": {
+      "active-player": "Aktívny prehrávač",
+      "nothing-playing": "Nič nehrá",
+      "now-playing": "Práve hrá",
+      "start-playback": "Spusti prehrávanie v aplikácii s MPRIS"
+    },
+    "network": {
+      "anonymous-identity": "Anonymná identita (nepovinné)",
+      "available": "Dostupné",
+      "ca-certificate": "Cesta k certifikátu CA (nepovinné)",
+      "cellular": "Mobilná sieť",
+      "cellular-connected": "Pripojené",
+      "cellular-connecting": "Pripája sa…",
+      "cellular-connection": "Mobilné pripojenie",
+      "cellular-enabling": "Zapína sa…",
+      "cellular-failed": "Zlyhalo",
+      "cellular-locked": "SIM je zamknutá",
+      "cellular-no-service": "Bez signálu",
+      "cellular-off": "Vypnuté",
+      "cellular-registered": "Prihlásené do siete",
+      "cellular-searching": "Hľadá sa…",
+      "connect": "Pripojiť",
+      "current-connection": "Aktuálne pripojenie",
+      "domain-suffix-match": "Prípona domény servera",
+      "eap-method": "Metóda EAP",
+      "enterprise-prompt-for": "Prihlásiť sa do {ssid}",
+      "error-ca-not-absolute": "Cesta k certifikátu musí byť úplná, so začiatočným /.",
+      "error-certificate-required": "Táto sieť vyžaduje overenie certifikátom (EAP-TLS), ktoré zatiaľ nie je podporované.",
+      "error-enterprise-unsupported": "Aktívna sieťová služba nevie nastaviť siete 802.1X.",
+      "error-missing-identity": "Zadaj identitu, ktorú ti pridelila tvoja organizácia.",
+      "error-missing-password": "Zadaj heslo.",
+      "error-unsupported-phase2": "PEAP vyžaduje vnútorné overenie MSCHAPv2.",
+      "external-ip": "Verejná IP {ip}",
+      "identity": "Identita",
+      "no-networks": "Žiadne siete v dosahu",
+      "not-connected": "Nepripojené",
+      "password": "Heslo",
+      "password-prompt": "Zadaj heslo",
+      "password-prompt-for": "Zadaj heslo pre {ssid}",
+      "phase2-auth": "Vnútorné overenie",
+      "saved": "Uložené",
+      "unavailable-detail": "Na správu sietí odtiaľto nainštaluj a zapni NetworkManager, wpa_supplicant alebo iwd.",
+      "unavailable-title": "Sieťová služba nie je dostupná",
+      "vpns": "VPN",
+      "wi-fi": "Wi-Fi",
+      "wifi": "Wi-Fi",
+      "wifi-off": "Wi-Fi je vypnuté",
+      "wifi-on": "Wi-Fi je zapnuté",
+      "wired-connection": "Káblové pripojenie"
+    },
+    "notifications": {
+      "clear-all": "Vymazať všetky upozornenia",
+      "dnd-off": "Vypnúť Nerušiť",
+      "dnd-on": "Zapnúť Nerušiť",
+      "empty-body": "Tu sa zobrazia nedávne upozornenia.",
+      "empty-title": "Žiadne upozornenia",
+      "filter": {
+        "all": "Všetky",
+        "older": "Staršie",
+        "today": "Dnes",
+        "yesterday": "Včera"
+      },
+      "filter-empty-body": "Filtru nezodpovedá žiadne upozornenie.",
+      "filter-empty-title": "Nič tu nie je",
+      "untitled": "Upozornenie bez názvu"
+    },
+    "power": {
+      "battery": "Batéria",
+      "charging": {
+        "configured": "Nastavené: {limits}",
+        "display-only": "Iba zobrazenie",
+        "error-denied": "Overenie bolo zamietnuté. Hranice nabíjania sa nezmenili.",
+        "error-failed": "Hranice nabíjania sa nepodarilo zmeniť.",
+        "externally-managed": "Nastavené iným nástrojom. Na správu hraníc nabíjania nastav UPower.",
+        "firmware-managed": "Nabíjanie riadi firmvér systému",
+        "full-charge": "Nabíja do 100 %",
+        "starts": "Začne pod {start} %",
+        "starts-stops": "Začne pod {start} % · skončí pri {end} %",
+        "stops": "Skončí pri {end} %",
+        "title": "Nabíjanie batérie",
+        "unreadable": "Nedostupné",
+        "unsupported": "Hranice nabíjania nie sú podporované",
+        "use-thresholds": "Použiť hranice nabíjania"
+      },
+      "design-capacity": "z pôvodnej kapacity",
+      "health": "Stav batérie",
+      "performance-inhibited": "Výkonný režim nie je dostupný",
+      "peripherals": "Pripojené zariadenia",
+      "power-profile": "Profil napájania",
+      "time-to-empty": "zostáva {time}",
+      "time-to-full": "do nabitia {time}",
+      "unknown-device": "Neznáme zariadenie"
+    },
+    "screen-time": {
+      "back": "Späť",
+      "disabled": "Sledovanie času pred obrazovkou je vypnuté. Zapni ho v Nastaveniach, aby sa zaznamenávalo používanie aplikácií.",
+      "empty": "Zatiaľ nie je zaznamenané žiadne používanie. Sledovanie začne, keď sa zameriaš na okno.",
+      "hour-0": "0:00",
+      "hour-12": "12:00",
+      "hour-18": "18:00",
+      "hour-6": "6:00",
+      "most-used": "NAJPOUŽÍVANEJŠIE",
+      "range": {
+        "14-days": "14 dní",
+        "3-days": "3 dni",
+        "today": "Dnes"
+      },
+      "view-day": "Podrobnosti dňa"
+    },
+    "shortcuts": {
+      "audio": "Zvuk",
+      "bluetooth": "Bluetooth",
+      "caffeine": "Kofeín",
+      "clipboard": "Schránka",
+      "dark-mode": {
+        "auto": "Automatický režim",
+        "dark": "Tmavý režim",
+        "light": "Svetlý režim"
+      },
+      "keyboard-layout": "Rozloženie klávesnice",
+      "media": "Médiá",
+      "mic-mute": "Mikrofón",
+      "nightlight": "Nočné svetlo",
+      "nightlight-states": {
+        "forced": "Stále zapnuté",
+        "off": "Nočné svetlo",
+        "scheduled-day": "Podľa plánu",
+        "scheduled-night": "Zapnuté"
+      },
+      "notification": "Nerušiť",
+      "power-profile": "Napájanie",
+      "screen-time": "Čas pred obrazovkou",
+      "session": "Relácia",
+      "system": "Systém",
+      "wallpaper": "Tapeta",
+      "weather": "Počasie",
+      "wifi": "Wi-Fi"
+    },
+    "system": {
+      "labels": {
+        "load": "Záťaž CPU",
+        "ram": "RAM",
+        "swap": "Swap"
+      },
+      "titles": {
+        "cpu": "CPU",
+        "gpu": "GPU",
+        "memory": "Pamäť",
+        "network": "Sieť",
+        "resources": "Prostriedky",
+        "system": "Systém"
+      },
+      "tooltips": {
+        "load": "Priemerná záťaž za 1 / 5 / 15 minút"
+      },
+      "unknown": "neznáme",
+      "uptime-prefix": "Beží {uptime} · {osAge}"
+    },
+    "tabs": {
+      "audio": "Zvuk",
+      "bluetooth": "Bluetooth",
+      "calendar": "Kalendár",
+      "home": "Domov",
+      "media": "Médiá",
+      "monitor": "Monitor",
+      "network": "Sieť",
+      "notifications": "Upozornenia",
+      "power": "Napájanie",
+      "screen-time": "Čas pred obrazovkou",
+      "system": "Systém",
+      "weather": "Počasie"
+    },
+    "weather": {
+      "daily": {
+        "tooltip": {
+          "condition": "Stav",
+          "high": "Max.",
+          "low": "Min.",
+          "sunrise": "Východ slnka",
+          "sunset": "Západ slnka"
+        }
+      },
+      "data-unavailable": "Údaje o počasí nie sú dostupné",
+      "details": {
+        "elevation": "Nadmorská výška",
+        "feels-like": "Pocitovo",
+        "sunrise": "Východ slnka",
+        "sunset": "Západ slnka",
+        "temp-max": "Najvyššia teplota",
+        "temp-min": "Najnižšia teplota",
+        "timezone": "Časové pásmo",
+        "uv-index": "UV index",
+        "wind": "Vietor"
+      },
+      "disabled": "Zapni [weather] v config.toml",
+      "fetching": "Načítavam predpoveď…",
+      "forecast-placeholder": {
+        "day": "Nedeľa",
+        "description": "Počasie",
+        "temperature": "10 / 4 °C"
+      },
+      "forecast-view": {
+        "daily": "Po dňoch",
+        "hourly": "Po hodinách"
+      },
+      "hourly": {
+        "summary": "{condition} / dážď {precip} %",
+        "tooltip": {
+          "condition": "Stav",
+          "humidity": "Vlhkosť",
+          "rain": "Dážď",
+          "wind": "Vietor"
+        }
+      },
+      "location-unavailable": "Poloha nie je dostupná",
+      "no-location-body": "Pridaj adresu alebo zapni automatickú polohu v nastaveniach Polohy.",
+      "no-location-title": "Poloha nie je nastavená",
+      "refreshing": "Obnovujem počasie…",
+      "waiting": "Čakám na údaje o počasí"
+    }
+  },
+  "desktop-widgets": {
+    "editor": {
+      "actions": {
+        "add": "Pridať",
+        "clone": "Duplikovať (Ctrl+C, Ctrl+V kopíruje/vkladá)",
+        "done": "Hotovo",
+        "flip-horizontal": "Prevrátiť vodorovne",
+        "flip-vertical": "Prevrátiť zvisle",
+        "hide": "Skryť",
+        "settings": "Nastavenia",
+        "show": "Zobraziť",
+        "stack-back": "Dozadu",
+        "stack-front": "Dopredu",
+        "trash": "Odstrániť"
+      },
+      "dialogs": {
+        "select-sticker-image": "Vybrať obrázok nálepky"
+      },
+      "settings": {
+        "aspect-ratio": "Pomer strán",
+        "background": "Pozadie",
+        "background-color": "Farba",
+        "background-opacity": "Krytie",
+        "background-padding": "Okraj",
+        "background-radius": "Zaoblenie",
+        "background-section": "Pozadie",
+        "bands": "Pásma",
+        "bar-width": "Šírka stĺpca",
+        "bloom-intensity": "Žiara",
+        "center-password-text": "Heslo do stredu",
+        "center-text": "Text do stredu",
+        "centered": "Na stred",
+        "change-image": "Zmeniť…",
+        "circle": "Kruh",
+        "clock-style": "Štýl hodín",
+        "clock-style-analog": "Ručičkové",
+        "clock-style-digital": "Digitálne",
+        "color": "Farba",
+        "color-1": "Farba 1",
+        "color-2": "Farba 2",
+        "color2": "Farba 2",
+        "command": "Príkaz",
+        "custom-color": "Vlastná",
+        "description": "Popis",
+        "device": "Zariadenie",
+        "display": "Zobrazenie",
+        "display-gauge": "Budík",
+        "display-graph": "Graf",
+        "fade-when-idle": "Stlmiť pri nečinnosti",
+        "fill-color": "Farba výplne",
+        "font-family": "Písmo",
+        "font-family-default": "Predvolené systémové",
+        "forecast-days": "Dni predpovede",
+        "format": "Formát",
+        "gauge-layout": "Rozloženie budíkov",
+        "glyph": "Ikona",
+        "hide-when-no-media": "Skryť, keď nič nehrá",
+        "highlight-color": "Farba zvýraznenia",
+        "horizontal": "Vodorovne",
+        "hover-background": "Pozadie pod kurzorom",
+        "hover-foreground": "Popredie pod kurzorom",
+        "image-path": "Obrázok",
+        "inner-diameter": "Vnútorný priemer",
+        "input-opacity": "Krytie poľa",
+        "input-radius": "Zaoblenie poľa",
+        "interface": "Rozhranie",
+        "label": "Popis",
+        "label-min-width": "Min. šírka popisu",
+        "layout": "Rozloženie",
+        "mirrored": "Zrkadlovo",
+        "network-speed-compact": "Kompaktná rýchlosť siete",
+        "network-speed-unit": "Jednotka rýchlosti siete",
+        "network-speed-unit-auto": "Automaticky",
+        "network-speed-unit-kilobytes": "kB/s",
+        "network-speed-unit-megabytes": "MB/s",
+        "opacity": "Krytie",
+        "primary-color": "Hlavná farba",
+        "reset-defaults": "Obnoviť predvolené",
+        "reversed": "Obrátene",
+        "ring-opacity": "Krytie kruhu",
+        "rotation-speed": "Rýchlosť otáčania",
+        "scroll-step": "Krok kolieska",
+        "secondary-color": "Vedľajšia farba",
+        "sensitivity": "Citlivosť",
+        "shadow": "Tieň",
+        "show-caps-lock": "Upozornenie na Caps Lock",
+        "show-device": "Zobraziť zariadenie",
+        "show-events": "Zobraziť udalosti",
+        "show-forecast": "Zobraziť predpoveď",
+        "show-keyboard-layout": "Rozloženie klávesnice",
+        "show-label": "Zobraziť popis",
+        "show-login-button": "Tlačidlo prihlásenia",
+        "show-media": "Médiá",
+        "show-password-hint": "Nápoveda k heslu",
+        "show-session-buttons": "Tlačidlá relácie",
+        "show-unlock-hint": "Nápoveda k odomknutiu",
+        "show-vpn-label": "Zobraziť VPN",
+        "show-weather": "Počasie",
+        "show-week-numbers": "Zobraziť čísla týždňov",
+        "show-when-idle": "Zobraziť pri nečinnosti",
+        "stat": "Údaj",
+        "stat-cpu-freq": "Frekvencia CPU",
+        "stat-cpu-temp": "Teplota CPU",
+        "stat-cpu-usage": "Využitie CPU",
+        "stat-gpu-temp": "Teplota GPU",
+        "stat-gpu-usage": "Využitie GPU",
+        "stat-gpu-vram": "Pamäť GPU",
+        "stat-gpu-vram-used": "Obsadená pamäť GPU",
+        "stat-net-rx": "Sieť príjem",
+        "stat-net-tx": "Sieť odosielanie",
+        "stat-none": "Žiadny",
+        "stat-ram-pct": "RAM %",
+        "stat-swap-pct": "Swap %",
+        "stat2": "Údaj 2",
+        "title": "Nadpis",
+        "track-color": "Farba dráhy",
+        "variant": "Štýl",
+        "variant-default": "Predvolený",
+        "variant-destructive": "Nebezpečný",
+        "variant-ghost": "Priehľadný",
+        "variant-outline": "Obrys",
+        "variant-primary": "Hlavný",
+        "variant-secondary": "Vedľajší",
+        "vertical": "Zvisle",
+        "visualization-mode": "Režim",
+        "visualization-mode-all": "Všetko",
+        "visualization-mode-bars": "Stĺpce",
+        "visualization-mode-bars-rings": "Stĺpce + kruhy",
+        "visualization-mode-rings": "Kruhy",
+        "visualization-mode-wave": "Vlna",
+        "visualization-mode-wave-rings": "Vlna + kruhy",
+        "wave-thickness": "Hrúbka vlny",
+        "widget-section": "Widget"
+      },
+      "state": {
+        "grid": "Mriežka"
+      },
+      "title": "Widgety plochy",
+      "title-lockscreen": "Widgety zamknutej obrazovky",
+      "types": {
+        "audio-visualizer": "Vizualizácia zvuku",
+        "button": "Tlačidlo",
+        "calendar": "Kalendár",
+        "clock": "Hodiny",
+        "fancy-audio-visualizer": "Efektná vizualizácia zvuku",
+        "label": "Popis",
+        "login-box": "Prihlasovacie pole",
+        "media-player": "Prehrávač",
+        "sticker": "Nálepka",
+        "system-monitor": "Monitor systému",
+        "volume": "Hlasitosť",
+        "weather": "Počasie"
+      }
+    },
+    "media": {
+      "nothing-playing": "Nič nehrá"
+    },
+    "volume": {
+      "mic": "Mikrofón",
+      "muted": "Stlmené",
+      "volume": "Hlasitosť"
+    },
+    "weather": {
+      "error": "Chyba",
+      "loading": "Načítavam…",
+      "no-location": "Bez polohy",
+      "off": "Počasie vypnuté"
+    }
+  },
+  "dock": {
+    "actions": {
+      "close": "Zavrieť",
+      "close-all": "Zavrieť všetky"
+    },
+    "launcher": "Spúšťač"
+  },
+  "internal-apps": {
+    "settings": {
+      "display-name": "Nastavenia"
+    }
+  },
+  "launcher": {
+    "categories": {
+      "all": "Všetko",
+      "applications": {
+        "development": "Vývoj",
+        "education": "Vzdelávanie",
+        "games": "Hry",
+        "graphics": "Grafika",
+        "internet": "Internet",
+        "multimedia": "Multimédiá",
+        "office": "Kancelária",
+        "system": "Systém",
+        "utilities": "Nástroje"
+      },
+      "emoji": {
+        "activity": "Aktivity",
+        "animals": "Zvieratá",
+        "flags": "Vlajky",
+        "food": "Jedlo",
+        "nature": "Príroda",
+        "objects": "Predmety",
+        "people": "Ľudia",
+        "symbols": "Symboly",
+        "travel": "Cestovanie"
+      },
+      "recently-used": "Nedávno použité"
+    },
+    "context-menu": {
+      "open": "Otvoriť",
+      "pin": "Pripnúť do spúšťača",
+      "pin-to-dock": "Pripnúť do doku",
+      "unpin": "Odopnúť zo spúšťača",
+      "unpin-from-dock": "Odopnúť z doku"
+    },
+    "empty": {
+      "loading": "Načítavam výsledky…",
+      "no-results": "Nič sa nenašlo",
+      "type-to-search": "Píš a hľadaj…"
+    },
+    "origins": {
+      "appimage": "AppImage",
+      "flatpak": "Flatpak",
+      "nix": "Nix",
+      "snap": "Snap",
+      "system": "Systém",
+      "user": "Používateľ"
+    },
+    "providers": {
+      "applications": {
+        "title": "Aplikácie"
+      },
+      "calculator": {
+        "title": "Kalkulačka"
+      },
+      "emoji": {
+        "title": "Emoji"
+      },
+      "panel": {
+        "builtin": {
+          "clipboard": "Schránka",
+          "control-center": "Ovládacie centrum",
+          "launcher": "Spúšťač",
+          "polkit": "Výzva na overenie",
+          "session": "Relácia",
+          "setup-wizard": "Sprievodca nastavením",
+          "test": "Skúšobný panel",
+          "tray-drawer": "Zásuvka oznamovacej oblasti",
+          "wallpaper": "Tapeta"
+        },
+        "title": "Panely"
+      },
+      "session": {
+        "action-subtitle": "Spustiť akciu relácie",
+        "command-subtitle": "Spustiť nastavený príkaz",
+        "title": "Relácia"
+      },
+      "wallpaper": {
+        "title": "Tapeta"
+      },
+      "window": {
+        "title": "Okná"
+      }
+    },
+    "search-placeholder": "Hľadať aplikácie…"
+  },
+  "location": {
+    "errors": {
+      "address-lookup-failed": "Adresu sa nepodarilo nájsť",
+      "ip-geolocation-failed": "Polohu podľa IP adresy sa nepodarilo zistiť",
+      "parse-geocode": "Odpoveď geokódovania sa nedá spracovať",
+      "parse-ip-geolocation": "Odpoveď polohy podľa IP sa nedá spracovať"
+    },
+    "locations": {
+      "current": "Aktuálna poloha"
+    },
+    "source": {
+      "address": "Adresa",
+      "auto": "Automaticky",
+      "manual": "Ručne"
+    }
+  },
+  "lockscreen": {
+    "authenticating": "Overujem…",
+    "authentication-failed": "Overenie zlyhalo",
+    "caps-lock-on": "Caps Lock je zapnutý",
+    "password-cleared": "Heslo vymazané",
+    "password-placeholder": "Heslo",
+    "ready": "Napíš heslo a stlač Enter.",
+    "unlocked": "Odomknuté",
+    "waiting": "Čakám na potvrdenie zamknutia…"
+  },
+  "notifications": {
+    "actions": {
+      "fallback": "Akcia",
+      "open": "Otvoriť"
+    },
+    "inline-reply": {
+      "button": "Odpovedať",
+      "placeholder": "Napíš odpoveď…"
+    },
+    "internal": {
+      "battery": "Batéria",
+      "battery-critical-body": "{device}: {percent} %; počítač sa čoskoro vypne",
+      "battery-critical-title": "Batéria je takmer vybitá",
+      "battery-device": "Batéria",
+      "battery-low-body": "{device}: zostáva {percent} %",
+      "battery-low-title": "Slabá batéria",
+      "calendar": "Kalendár",
+      "calendar-credential-locked-body": "Odomkni zväzok kľúčov, ktorý používa Secret Service, a skús znova v Nastaveniach. Pri GNOME Keyring nastav ako predvolený automaticky odomykaný zväzok, napríklad Login.",
+      "calendar-credential-locked-title": "Zväzok kľúčov kalendára je zamknutý",
+      "calendar-digest-more": "+{count} ďalšie",
+      "calendar-digest-title": "Dnes celý deň",
+      "calendar-google-connect-browser-failed": "Na prihlásenie do Googlu sa nepodarilo otvoriť prehliadač. Skontroluj predvolený prehliadač alebo xdg-open.",
+      "calendar-google-connect-credential-store-failed": "Prihlásenie sa podarilo, ale obnovovací token sa nepodarilo uložiť. Odomkni alebo spusti Secret Service a pripoj sa znova.",
+      "calendar-google-connect-expired": "Prihlásenie do Googlu vypršalo skôr, ako sa dokončilo. Začni pripájanie znova.",
+      "calendar-google-connect-failed-title": "Pripojenie Kalendára Google zlyhalo",
+      "calendar-google-connect-missing-account": "Žiadny nastavený účet Kalendára Google nezodpovedá „{account}“.",
+      "calendar-google-connect-rate-limited": "Prihlasovanie do Googlu je dočasne obmedzené. Chvíľu počkaj a skús znova.",
+      "calendar-google-connect-result-failed": "Prihlásenie do Googlu sa nepodarilo dokončiť. Začni pripájanie znova.",
+      "calendar-google-connect-start-failed": "Prihlásenie do Googlu sa nepodarilo začať. Skontroluj pripojenie k sieti a skús znova.",
+      "calendar-google-connect-start-http": "Prihlásenie do Googlu sa nepodarilo začať. Sprostredkovateľ OAuth vrátil HTTP {status}.",
+      "calendar-google-connect-timeout": "Čas na prihlásenie do Googlu vypršal. Začni pripájanie znova, keď budeš pripravený.",
+      "calendar-reminder-catchup-body": "Čoskoro začínajú ďalšie udalosti: {count}.",
+      "calendar-reminder-catchup-title": "Ďalšie blížiace sa udalosti",
+      "calendar-reminder-in": "Začína o {minutes} min · {time}",
+      "calendar-reminder-now": "Začína teraz · {time}",
+      "calendar-reminder-open": "Otvoriť",
+      "calendar-reminder-untitled": "Udalosť bez názvu",
+      "calendar-reminder-with-location": "{when}\n{location}",
+      "config-migration-body": "Uprav {path} v zdrojovom súbore. Noctalia túto náhradu používa iba dočasne. Príkaz noctalia config validate vypíše všetky potrebné zmeny.",
+      "config-migration-title": "Treba aktualizovať nastavenia",
+      "dbus-disabled": "Upozornenia cez DBus sú vypnuté",
+      "desktop-widgets-editor": "Úprava widgetov",
+      "desktop-widgets-editor-enabled": "Úprava widgetov na ploche je zapnutá. Prepni sa na prázdnu plochu, aby okná nezakrývali editor.",
+      "greeter-sync": "Prihlasovacia obrazovka Noctalia",
+      "greeter-sync-pending": "Prenášam vzhľad na prihlasovaciu obrazovku. Ak sa objaví výzva správcu, potvrď ju; overenie bez hesla sa riadi pravidlami systému.",
+      "greeter-sync-pending-console": "Prenášam vzhľad na prihlasovaciu obrazovku. Ak treba overenie, potvrď výzvu polkit v Noctalii, na TTY alebo v konzole.",
+      "greeter-sync-pending-legacy": "Prenášam cez starší overený pomocný program. Vyžaduje sa súhlas správcu.",
+      "greeter-sync-pending-manual": "Súbory sú pripravené na starší overený prenos. Spusti pomocný program apply v termináli (zachovaj NOCTALIA_GREETER_STATE_DIR, ak používaš vlastnú cestu) alebo nastav shell.greeter_sync.privilege_command a prenes znova.",
+      "greeter-sync-pending-manual-pkexec": "Prenášam vzhľad na prihlasovaciu obrazovku. Ak treba súhlas správcu a výzva sa neobjaví, spusti v termináli: pkexec noctalia-greeter-apply-appearance --sync \"/run/user/$(id -u)/noctalia-greeter-sync\".",
+      "greeter-sync-success": "Vzhľad prenesený. Prejaví sa na najbližšej prihlasovacej obrazovke.",
+      "greeter-sync-timeout": "Prenos na prihlasovaciu obrazovku stále čaká na overenie. Pozri výzvu polkit na TTY alebo v konzole, zapni agenta polkit v nastaveniach Zabezpečenia, alebo spusti pkexec ručne.",
+      "greeter-sync-timeout-manual": "Starší overený prenos stále čaká na súhlas správcu. Spusti pomocný program apply v termináli a zachovaj NOCTALIA_GREETER_STATE_DIR, ak používaš vlastnú cestu.",
+      "greeter-sync-timeout-manual-pkexec": "Prenos na prihlasovaciu obrazovku stále čaká na overenie. Spusti v termináli: pkexec noctalia-greeter-apply-appearance --sync \"/run/user/$(id -u)/noctalia-greeter-sync\"",
+      "keybind-app": "Noctalia",
+      "keybind-invalid-modifier": "Táto skratka prijíma iba jeden kláves bez modifikátorov.",
+      "keybind-invalid-printable": "Klávesy so znakmi (písmená, čísla, symboly) potrebujú modifikátor, napríklad Ctrl alebo Alt.",
+      "keybind-invalid-super": "Kláves Super/Windows sa v skratkách shellu nedá použiť.",
+      "keybind-invalid-title": "Skratka nie je povolená",
+      "launcher-usage-reset": "Spúšťač",
+      "launcher-usage-reset-success": "Údaje o používaní vymazané.",
+      "lockscreen-widgets-editor": "Úprava widgetov zamknutej obrazovky",
+      "lockscreen-widgets-editor-blocked-locked": "Pred úpravou widgetov zamknutej obrazovky odomkni reláciu.",
+      "lockscreen-widgets-editor-enabled": "Úprava widgetov zamknutej obrazovky je zapnutá. Prepni sa na prázdnu plochu, aby okná nezakrývali editor.",
+      "mpris-disabled": "MPRIS je vypnutý",
+      "polkit-agent": "Agent polkit",
+      "polkit-no-session": "Agent polkit potrebuje logind, elogind alebo XDG_SESSION_ID. Pri samotnom seatd sa nemôže zaregistrovať na grafické výzvy. Na prenos na prihlasovaciu obrazovku použi pkexec v termináli, alebo nainštaluj elogind na overovanie v relácii.",
+      "screen-time-reset": "Čas pred obrazovkou",
+      "screen-time-reset-success": "História používania vymazaná.",
+      "session-bus-unavailable": "Zbernica relácie nie je dostupná",
+      "wallpaper-palette-export": "Vlastná paleta",
+      "wallpaper-palette-export-success": "„{name}“ uložená a zdroj palety prepnutý na vlastnú."
+    }
+  },
+  "osd": {
+    "bluetooth": {
+      "off": "Bluetooth vypnutý",
+      "on": "Bluetooth zapnutý"
+    },
+    "caffeine": {
+      "off": "Kofeín vypnutý",
+      "on": "Kofeín zapnutý"
+    },
+    "dnd": {
+      "off": "Nerušiť vypnuté",
+      "on": "Nerušiť zapnuté"
+    },
+    "effects": {
+      "input": "Efekty vstupu",
+      "output": "Efekty výstupu"
+    },
+    "lock-keys": {
+      "caps-off": "Caps Lock vypnutý",
+      "caps-on": "Caps Lock zapnutý",
+      "num-off": "Num Lock vypnutý",
+      "num-on": "Num Lock zapnutý",
+      "scroll-off": "Scroll Lock vypnutý",
+      "scroll-on": "Scroll Lock zapnutý"
+    },
+    "nightlight": {
+      "forced": "Stále zapnuté",
+      "off": "Nočné svetlo vypnuté",
+      "running": "Zapnuté",
+      "scheduled": "Podľa plánu"
+    },
+    "privacy": {
+      "camera-off": "Kamera zastavená",
+      "camera-on": "Kamera je aktívna",
+      "mic-off": "Mikrofón zastavený",
+      "mic-on": "Mikrofón je aktívny",
+      "screen-off": "Zdieľanie obrazovky zastavené",
+      "screen-on": "Obrazovka sa zdieľa"
+    },
+    "wifi": {
+      "off": "Wi-Fi vypnuté",
+      "on": "Wi-Fi zapnuté"
+    }
+  },
+  "plugins": {
+    "auto-disabled": {
+      "body-errors": "{plugin} mal príliš veľa chýb a bol vypnutý. Po odstránení problému ho znova načítaj.",
+      "body-timeouts": "{plugin} prestal odpovedať a bol vypnutý. Po odstránení problému ho znova načítaj.",
+      "title": "Doplnok vypnutý"
+    },
+    "enable-failed": {
+      "body-error": "{plugin}: {error}",
+      "body-incompatible": "{plugin} je pre API doplnkov {version}; táto Noctalia podporuje API {oldest}–{current}.",
+      "body-timeout": "Inštalácia doplnku {plugin} trvala príliš dlho.",
+      "title": "Doplnok sa nezapol"
+    }
+  },
+  "power": {
+    "battery": {
+      "states": {
+        "battery": "Batéria",
+        "charging": "Nabíja sa",
+        "discharging": "Vybíja sa",
+        "empty": "Vybitá",
+        "pending-discharge": "Čaká na vybíjanie",
+        "plugged-in": "Pripojené k sieti"
+      },
+      "tooltip": {
+        "device": "Batéria",
+        "device-numbered": "Batéria {index}",
+        "health": "Stav batérie",
+        "rate": "Výkon",
+        "status": "Stav",
+        "time-left": "Zostáva",
+        "time-to-full": "Do nabitia",
+        "unknown-device": "Neznáme zariadenie"
+      }
+    },
+    "profiles": {
+      "balanced": "Vyvážený",
+      "performance": "Výkon",
+      "power-saver": "Úspora energie"
+    }
+  },
+  "session": {
+    "actions": {
+      "custom": "Vlastné",
+      "lock": "Zamknúť",
+      "lock-and-suspend": "Zamknúť a uspať",
+      "logout": "Odhlásiť sa",
+      "reboot": "Reštartovať",
+      "shutdown": "Vypnúť",
+      "suspend": "Uspať"
+    },
+    "errors": {
+      "lock-body": "Protokol zamknutia relácie nie je k dispozícii.",
+      "lock-title": "Zamknutie nie je dostupné"
+    }
+  },
+  "setup-wizard": {
+    "browse": "Prehľadávať",
+    "builtin-palette": "Vstavaná paleta",
+    "footer-note": "Neskôr to môžeš zmeniť v nastaveniach.",
+    "get-started": "Začať",
+    "mode": "Režim",
+    "no-wallpaper-selected": "Nie je vybraná tapeta",
+    "select-wallpaper": "Vybrať tapetu",
+    "subtitle": "Pár rýchlych volieb na začiatok.",
+    "title": "Vitaj v Noctalii",
+    "wallpaper": "Tapeta",
+    "wallpaper-scheme": "Farby z tapety"
+  },
+  "system": {
+    "hardware": {
+      "unknown": "Neznáme",
+      "unknown-cpu": "Neznámy procesor",
+      "unknown-distro": "Neznáma distribúcia",
+      "unknown-gpu": "Neznáma grafika"
+    }
+  },
+  "theme": {
+    "scheme": {
+      "dysfunctional": "Dysfunkčná",
+      "faithful": "Verná",
+      "m3-content": "M3 Obsah",
+      "m3-fruit-salad": "M3 Ovocný šalát",
+      "m3-monochrome": "M3 Jednofarebná",
+      "m3-rainbow": "M3 Dúha",
+      "m3-tonal-spot": "M3 Tónová škvrna",
+      "muted": "Tlmená",
+      "soft": "Jemná",
+      "vibrant": "Sýta"
+    }
+  },
+  "time": {
+    "duration": {
+      "less-than-day": "menej ako 1 deň",
+      "less-than-minute": "<1 min",
+      "three-parts": "{first} {second} {third}",
+      "two-parts": "{first} {second}"
+    },
+    "file": {
+      "unknown": "Neznámy"
+    },
+    "relative": {
+      "days-ago": "pred {count} dňom",
+      "days-ago-plural": "pred {count} dňami",
+      "hours-ago": "pred {count} hod.",
+      "hours-ago-plural": "pred {count} hod.",
+      "just-now": "práve teraz",
+      "minutes-ago": "pred {count} min",
+      "minutes-ago-plural": "pred {count} min"
+    },
+    "units": {
+      "day": "{count} deň",
+      "day-plural": "{count} d.",
+      "hour": "{count} hodina",
+      "hour-compact": "{count} h",
+      "hour-plural": "{count} hod.",
+      "minute": "{count} minúta",
+      "minute-compact": "{count} min",
+      "minute-plural": "{count} min",
+      "month": "{count} mesiac",
+      "month-plural": "{count} mes.",
+      "year": "{count} rok",
+      "year-plural": "{count} r."
+    }
+  },
+  "tray": {
+    "menu": {
+      "empty": "Žiadne položky ponuky…",
+      "pin": "Pripnúť",
+      "unpin": "Odopnúť"
+    }
+  },
+  "ui": {
+    "controls": {
+      "search-picker": {
+        "empty": "Žiadne výsledky",
+        "placeholder": "Hľadať…"
+      },
+      "select": {
+        "placeholder": "Vyber možnosť"
+      }
+    },
+    "dialogs": {
+      "color-picker": {
+        "title": "Farba"
+      },
+      "file": {
+        "actions": {
+          "open": "Otvoriť",
+          "save": "Uložiť",
+          "select-folder": "Vybrať priečinok"
+        },
+        "empty-filtered": "Filtru nezodpovedá žiadny súbor",
+        "entry": {
+          "folder": "Priečinok"
+        },
+        "filename-placeholder": "Názov súboru",
+        "filter-placeholder": "Filtrovať…",
+        "sort": {
+          "ascending": "↑",
+          "date": "Dátum",
+          "descending": "↓",
+          "name": "Názov",
+          "size": "Veľkosť"
+        },
+        "title": {
+          "default": "Výber súboru",
+          "open": "Otvoriť súbor",
+          "save": "Uložiť súbor",
+          "select-folder": "Vybrať priečinok"
+        }
+      },
+      "glyph-picker": {
+        "all-categories": "Všetky",
+        "search-placeholder": "Hľadať ikony…",
+        "title": "Vyber ikonu"
+      }
+    }
+  },
+  "wallpaper": {
+    "panel": {
+      "all-monitors": "VŠETKY",
+      "choose-color": "Vybrať farbu tapety",
+      "close": "Zavrieť panel tapiet",
+      "color-title": "Farba tapety",
+      "favorite-add": "Pridať k obľúbeným",
+      "favorite-current": "Pridať aktuálnu tapetu k obľúbeným",
+      "favorite-remove": "Odobrať z obľúbených",
+      "filter-placeholder": "Filtrovať…",
+      "flatten": "Bez priečinkov",
+      "loading": "Načítavam tapety…",
+      "navigate-up": "O priečinok vyššie",
+      "refresh": "Obnoviť tapety",
+      "sort-date-asc": "Podľa dátumu (najstaršie prvé)",
+      "sort-date-desc": "Podľa dátumu (najnovšie prvé)",
+      "sort-name-asc": "Podľa názvu (A – Z)",
+      "sort-name-desc": "Podľa názvu (Z – A)",
+      "sort-random": "Náhodne (zamiešať)",
+      "title": "Tapeta",
+      "unfavorite-current": "Odobrať aktuálnu tapetu z obľúbených"
+    }
+  },
+  "weather": {
+    "conditions": {
+      "full": {
+        "clear-sky": "Jasno",
+        "drizzle": "Mrholenie",
+        "fog": "Hmla",
+        "mainly-clear": "Prevažne jasno",
+        "overcast": "Zamračené",
+        "partly-cloudy": "Polojasno",
+        "rain-showers": "Prehánky",
+        "snow": "Sneženie",
+        "snow-showers": "Snehové prehánky",
+        "thunderstorm": "Búrka",
+        "unknown": "Neznáme"
+      },
+      "short": {
+        "clear": "Jasno",
+        "cloudy": "Oblačno",
+        "drizzle": "Mrholenie",
+        "fog": "Hmla",
+        "mostly-clear": "Prevažne jasno",
+        "overcast": "Zamračené",
+        "showers": "Prehánky",
+        "snow": "Sneženie",
+        "snow-showers": "Snehové prehánky",
+        "storm": "Búrka",
+        "weather": "Počasie"
+      }
+    },
+    "errors": {
+      "fetch-failed": "Počasie sa nepodarilo načítať",
+      "parse-weather": "Odpoveď o počasí sa nedá spracovať"
+    }
+  },
+  "window-switcher": {
+    "count": "{count} okno",
+    "count-plural": "Okná: {count}",
+    "empty": "Žiadne otvorené okná",
+    "hint": "Tab · Shift+Tab · šípky · pustením modifikačného klávesu prepneš · Esc zruší",
+    "title": "Okná"
+  }
+}

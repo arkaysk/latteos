@@ -7,4 +7,4 @@ Exec=latte-app subory %F
 Icon=system-file-manager
 Categories=System;FileManager;Utility;
 Keywords=subory;files;data;manager;disky;
-MimeType=inode/directory;
+MimeType=inode/directory;application/zip;application/x-7z-compressed;application/vnd.rar;application/x-rar;application/x-tar;application/x-compressed-tar;application/x-bzip2-compressed-tar;application/x-xz-compressed-tar;application/x-zstd-compressed-tar;application/x-cd-image;application/vnd.ms-cab-compressed;application/x-cpio;

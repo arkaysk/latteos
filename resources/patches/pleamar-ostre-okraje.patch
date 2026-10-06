@@ -1,0 +1,58 @@
+diff --git a/src/shape.wgsl b/src/shape.wgsl
+index 5d2d920..0f7e39d 100644
+--- a/src/shape.wgsl
++++ b/src/shape.wgsl
+@@ -358,12 +358,17 @@ fn fs(e: VertexOut) -> @location(0) vec4<f32> {
+         d = smooth_min(d, shape_distance(first + k, p), blend);
+         if (has_shadow) { d_shadow = smooth_min(d_shadow, shape_distance(first + k, p - el.shadow.xy), blend); }
+     }
++    // Where shapes melt (smooth min) the distance is squeezed: it changes less than a pixel per pixel, and an
++    // edge of fixed width smears over several — the eyes left between melted shapes came out blurred. The edge
++    // follows how much the distance really changes per pixel instead: only ever sharper, never softer.
++    let edge_g = vec2<f32>(dpdx(d), dpdy(d));
++    let de = d / clamp(length(edge_g) * u.header.w, 0.2, 1.0);
+     // Glass: from 0 to 1, in the `uv` slot, which a body does not use.
+     let glass = el.uv.x;
+     if (has_shadow) {
+         // Its colour is the three slots of `color1`; if nothing is said, black.
+         // Under glass the shadow does not show through: only around it.
+-        let covered = 1.0 - coverage(d) * glass;
++        let covered = 1.0 - coverage(de) * glass;
+         c = over(c, el.color1.rgb, el.shadow.w * alpha * covered * (1.0 - smoothstep(-8.0, el.shadow.z, d_shadow)));
+     }
+     var tone = el.color0.rgb;
+@@ -379,7 +384,7 @@ fn fs(e: VertexOut) -> @location(0) vec4<f32> {
+         tone = between_stops(u32(el.dest.x), u32(el.dest.y), t);
+     }
+     let light = clamp(1.0 - (local.y - el.light.y) / max(el.light.z, 1.0), 0.0, 1.0) * el.light.x;
+-    tone += vec3<f32>(light) + vec3<f32>(el.color0.w) * smoothstep(-2.2, -0.4, d);
++    tone += vec3<f32>(light) + vec3<f32>(el.color0.w) * smoothstep(-2.2, -0.4, de);
+     // Where the edge points: towards where the distance grows.
+     let g = vec2<f32>(dpdx(d), dpdy(d));
+     let normal = g / max(length(g), 1e-6);
+@@ -495,7 +500,7 @@ fn fs(e: VertexOut) -> @location(0) vec4<f32> {
+         // background, sharp, under our alpha, and it would leak through like a
+         // ghost of the text behind: it is subtracted beforehand, since we know
+         // it. What is seen: ours + (1 − α)·behind = glass · coverage.
+-        let seen = coverage(d) * alpha * glass;
++        let seen = coverage(de) * alpha * glass;
+         let db = textureSampleLevel(backdrop_sharp, backdrop_sampler, e.pos.xy / size, 0.0);
+         let underneath = db.rgb / max(db.a, 0.001) * step(0.5, db.a);
+         let lens_alpha = seen * LENS_ALPHA;
+@@ -504,13 +509,13 @@ fn fs(e: VertexOut) -> @location(0) vec4<f32> {
+     } else {
+         // Without it, the fill is a tint: it lets what is behind show through
+         // (which the compositor blurs) and keeps its colour; and on top, its light.
+-        c = over(c, tone, coverage(d) * alpha * mix(1.0, 0.36, glass));
++        c = over(c, tone, coverage(de) * alpha * mix(1.0, 0.36, glass));
+         if (glass > 0.0) {
+-            c = over(c, vec3<f32>(1.0), clamp(shine + finger_light, 0.0, 1.0) * glass * coverage(d) * alpha);
++            c = over(c, vec3<f32>(1.0), clamp(shine + finger_light, 0.0, 1.0) * glass * coverage(de) * alpha);
+         }
+     }
+     if (el.light.w > 0.0) {
+-        c = over(c, el.border.rgb, coverage(abs(d + el.light.w * 0.5) - el.light.w * 0.5) * alpha);
++        c = over(c, el.border.rgb, coverage(abs(de + el.light.w * 0.5) - el.light.w * 0.5) * alpha);
+     }
+     return c;
+ }

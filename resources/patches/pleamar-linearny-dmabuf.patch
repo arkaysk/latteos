@@ -1,0 +1,89 @@
+diff --git a/src/gpu.rs b/src/gpu.rs
+index 9b788d2..1be06c6 100644
+--- a/src/gpu.rs
++++ b/src/gpu.rs
+@@ -2352,7 +2352,14 @@ impl Gpu {
+         // whoever made it says; Vulkan takes it.
+         let hal_texture = unsafe {
+             let hal = device.as_hal::<Vulkan>().ok_or("the card is not driven with Vulkan")?;
+-            hal.texture_from_dmabuf_fd(fd, &hal_desc, modifier, stride as u64, offset as u64).map_err(|e| format!("{e:?}"))?
++            // LatteOS (latte-lab, RX 640 / GFX8): RADV there has no VK_EXT_image_drm_format_modifier, and wgpu's
++            // import names the modifier: it answers `Unexpected` and pleamar-wm's monitors stay on the TTY's text.
++            // A LINEAR buffer needs no modifier: an image of linear tiling over the same memory.
++            if modifier == 0 && !device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF) {
++                Self::import_linear_dmabuf(&hal, fd, &hal_desc, stride as u64, offset as u64)?
++            } else {
++                hal.texture_from_dmabuf_fd(fd, &hal_desc, modifier, stride as u64, offset as u64).map_err(|e| format!("{e:?}"))?
++            }
+         };
+         let desc = wgpu::TextureDescriptor {
+             label: Some("a buffer on the card"),
+@@ -2368,6 +2375,68 @@ impl Gpu {
+         Ok(unsafe { device.create_texture_from_hal::<Vulkan>(hal_texture, &desc, initial) })
+     }
+ 
++    /// A LINEAR dmabuf as a texture without `VK_EXT_image_drm_format_modifier` (LatteOS: cards whose Vulkan
++    /// driver lacks it, like RADV on Polaris): an image of linear tiling bound to the buffer's memory, taken
++    /// only if the driver lays its rows out as the buffer does.
++    #[cfg(target_os = "linux")]
++    unsafe fn import_linear_dmabuf(hal: &wgpu::hal::vulkan::Device, fd: std::os::fd::OwnedFd, desc: &wgpu::hal::TextureDescriptor, stride: u64, offset: u64) -> Result<wgpu::hal::vulkan::Texture, String> {
++        use ash::vk;
++        use std::os::fd::{AsRawFd, IntoRawFd};
++        let raw = hal.raw_device();
++        let instance = hal.shared_instance().raw_instance();
++        let mut usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
++        if desc.usage.contains(wgpu::TextureUses::COLOR_TARGET) {
++            usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
++        }
++        let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
++        let info = vk::ImageCreateInfo::default()
++            .image_type(vk::ImageType::TYPE_2D)
++            .format(vk::Format::B8G8R8A8_UNORM)
++            .extent(vk::Extent3D { width: desc.size.width, height: desc.size.height, depth: 1 })
++            .mip_levels(1)
++            .array_layers(1)
++            .samples(vk::SampleCountFlags::TYPE_1)
++            .tiling(vk::ImageTiling::LINEAR)
++            .usage(usage)
++            .sharing_mode(vk::SharingMode::EXCLUSIVE)
++            .initial_layout(vk::ImageLayout::UNDEFINED)
++            .push_next(&mut external);
++        let image = unsafe { raw.create_image(&info, None) }.map_err(|e| format!("no linear image for the buffer: {e}"))?;
++        let made = (|| -> Result<vk::DeviceMemory, String> {
++            let layout = unsafe { raw.get_image_subresource_layout(image, vk::ImageSubresource { aspect_mask: vk::ImageAspectFlags::COLOR, mip_level: 0, array_layer: 0 }) };
++            if layout.row_pitch != stride || layout.offset != offset {
++                return Err(format!("the driver lays a linear image out with rows of {} bytes from {}, and the buffer has {stride} from {offset}", layout.row_pitch, layout.offset));
++            }
++            let needs = unsafe { raw.get_image_memory_requirements(image) };
++            let fd_fn = ash::khr::external_memory_fd::Device::new(instance, raw);
++            let mut props = vk::MemoryFdPropertiesKHR::default();
++            unsafe { fd_fn.get_memory_fd_properties(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT, fd.as_raw_fd(), &mut props) }.map_err(|e| format!("the buffer's memory is not known to the driver: {e}"))?;
++            let kinds = unsafe { instance.get_physical_device_memory_properties(hal.raw_physical_device()) };
++            let bits = needs.memory_type_bits & props.memory_type_bits;
++            let kind = (0..kinds.memory_type_count).find(|k| bits & (1 << k) != 0).ok_or("no kind of memory takes the buffer")?;
++            let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
++            let mut import = vk::ImportMemoryFdInfoKHR::default().handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT).fd(fd.as_raw_fd());
++            let ask = vk::MemoryAllocateInfo::default().allocation_size(needs.size).memory_type_index(kind).push_next(&mut import).push_next(&mut dedicated);
++            let memory = unsafe { raw.allocate_memory(&ask, None) }.map_err(|e| format!("the buffer's memory was not taken: {e}"))?;
++            if let Err(e) = unsafe { raw.bind_image_memory(image, memory, 0) } {
++                unsafe { raw.free_memory(memory, None) };
++                return Err(format!("the buffer's memory was not bound: {e}"));
++            }
++            Ok(memory)
++        })();
++        match made {
++            Ok(memory) => {
++                // Vulkan owns the fd from the moment it took the memory.
++                let _ = fd.into_raw_fd();
++                Ok(unsafe { hal.texture_from_raw(image, desc, None, wgpu::hal::vulkan::TextureMemory::Dedicated(memory)) })
++            }
++            Err(e) => {
++                unsafe { raw.destroy_image(image, None) };
++                Err(e)
++            }
++        }
++    }
++
+     /// How big the windows' texture is: what a window's corners are measured against.
+     pub fn windows_dims(&self) -> (u32, u32) {
+         (self.windows_dims.0, self.windows_dims.1)

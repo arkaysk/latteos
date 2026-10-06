@@ -1,0 +1,292 @@
+#!/usr/bin/python3
+"""latte-hladaj — hľadanie súborov LatteOS (spúšťač Kvapiek, Súbory). Lepšie než hľadanie vo Windows:
+okamžite (index plocate + čerstvé súbory cez fd), po slovensky aj bez diakritiky, s preklepmi (fuzzy),
+v obsahu (ripgrep), s filtrami v texte a s poradím podľa toho, čo naozaj otváraš.
+
+  latte-hladaj [--json] [--max N] [--typ T] [--obsah] DOTAZ…
+
+Filtre priamo v dotaze (dajú sa kombinovať, poradie nezáleží):
+  typ:obrazok|video|hudba|dokument|pdf|tabulka|prezentacia|archiv|kod|program|priecinok   (aj bez diakritiky, aj anglicky)
+  .pdf  ext:pdf,docx            prípona
+  >10MB  <500kB                 veľkosť
+  dnes  vcera  tyzden  mesiac  rok  2024  od:2024-05-01  do:2024-06-30   dátum zmeny
+  v:Dokumenty  v:~/Projekty     iba v priečinku
+  "presná fráza"                presná zhoda mena
+  obsah:text  (alebo --obsah)   hľadá aj v obsahu textových súborov (ripgrep), ukáže riadok
+  skryte                        aj skryté súbory a priečinky (.config…)
+Výstup: riadky „cesta“ (priečinok končí /), s --json objekty {path, dir, size, mtime, score, line}.
+"""
+import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.parse
+from datetime import datetime, timedelta
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "latteos")
+OPENED = os.path.join(STATE, "hladaj-otvorene.json")      # čo používateľ z výsledkov otvoril (poradie)
+
+TYPES = {
+    "obrazok": "jpg jpeg png gif webp avif heic bmp tif tiff svg raw cr2 nef arw dng psd xcf kra",
+    "video": "mp4 mkv webm mov avi m4v wmv flv mpg mpeg ts",
+    "hudba": "mp3 flac ogg opus m4a aac wav wma aiff mid",
+    "dokument": "pdf doc docx odt rtf txt md tex epub djvu pages xps",
+    "pdf": "pdf",
+    "tabulka": "xls xlsx ods csv tsv numbers",
+    "prezentacia": "ppt pptx odp key",
+    "archiv": "zip 7z rar tar gz tgz bz2 xz zst iso cab",
+    "kod": "py rs js ts tsx jsx c h cpp hpp go java kt rb php sh lua luau qml json toml yaml yml html css sql",
+    "program": "exe msi appimage flatpakref rpm deb apk sh desktop",
+}
+ALIASES = {"image": "obrazok", "obrazky": "obrazok", "foto": "obrazok", "fotky": "obrazok", "videa": "video", "film": "video",
+           "music": "hudba", "audio": "hudba", "doc": "dokument", "dokumenty": "dokument", "text": "dokument",
+           "excel": "tabulka", "tabulky": "tabulka", "sheet": "tabulka", "powerpoint": "prezentacia", "archive": "archiv",
+           "code": "kod", "app": "program", "aplikacia": "program", "folder": "priecinok", "adresar": "priecinok", "dir": "priecinok"}
+JUNK = re.compile(r"/(node_modules|\.git|\.cache|__pycache__|\.venv|venv|target/(debug|release)|\.cargo/registry|\.local/share/Trash"
+                  r"|\.mozilla|\.var/app/[^/]+/cache|\.npm|\.rustup|site-packages)(/|$)")
+USER_DIRS = ("Dokumenty", "Documents", "Stiahnuté", "Downloads", "Obrázky", "Pictures", "Plocha", "Desktop", "Hudba", "Music",
+             "Videá", "Videos", "Projekty", "Projects")
+
+
+def fold(s):
+    """malé písmená bez diakritiky: „Účtenka“ → „uctenka“"""
+    return "".join(c for c in unicodedata.normalize("NFKD", s.lower()) if not unicodedata.combining(c))
+
+
+def size_bytes(num, unit):
+    return float(num.replace(",", ".")) * {"b": 1, "kb": 1e3, "k": 1e3, "mb": 1e6, "m": 1e6, "gb": 1e9, "g": 1e9, "tb": 1e12}[unit.lower()]
+
+
+def parse(q, typ=None, obsah=False):
+    f = {"words": [], "exact": [], "ext": set(), "min": None, "max": None, "after": None, "before": None,
+         "dir": None, "dirs_only": False, "files_only": False, "content": None, "hidden": False}
+    if typ:
+        q += " typ:" + typ
+    for m in re.finditer(r'"([^"]+)"', q):
+        f["exact"].append(fold(m.group(1)))
+    q = re.sub(r'"[^"]*"', " ", q)
+    now = datetime.now()
+    day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for tok in q.split():
+        t = fold(tok)
+        m = re.fullmatch(r"([<>])(\d+(?:[.,]\d+)?)(b|kb|k|mb|m|gb|g|tb)", t)
+        if t.startswith(("typ:", "type:")):
+            k = ALIASES.get(t.split(":", 1)[1], t.split(":", 1)[1])
+            if k == "priecinok":
+                f["dirs_only"] = True
+            elif k in TYPES:
+                f["ext"].update(TYPES[k].split()); f["files_only"] = True
+        elif t.startswith("ext:"):
+            f["ext"].update(e.lstrip(".") for e in t[4:].split(",") if e); f["files_only"] = True
+        elif re.fullmatch(r"\.[a-z0-9]{1,6}", t):
+            f["ext"].add(t[1:]); f["files_only"] = True
+        elif m:
+            f["min" if m.group(1) == ">" else "max"] = size_bytes(m.group(2), m.group(3))
+        elif t in ("dnes", "today"):
+            f["after"] = day0
+        elif t in ("vcera", "yesterday"):
+            f["after"], f["before"] = day0 - timedelta(days=1), day0
+        elif t in ("tyzden", "week"):
+            f["after"] = now - timedelta(days=7)
+        elif t in ("mesiac", "month"):
+            f["after"] = now - timedelta(days=31)
+        elif t in ("rok", "year"):
+            f["after"] = now - timedelta(days=365)
+        elif re.fullmatch(r"(19|20)\d\d", t):
+            f["after"], f["before"] = datetime(int(t), 1, 1), datetime(int(t) + 1, 1, 1)
+        elif t.startswith(("od:", "from:")):
+            f["after"] = datetime.fromisoformat(t.split(":", 1)[1])
+        elif t.startswith(("do:", "to:")):
+            f["before"] = datetime.fromisoformat(t.split(":", 1)[1]) + timedelta(days=1)
+        elif t.startswith(("v:", "in:")):
+            d = os.path.expanduser(tok.split(":", 1)[1])
+            if not d.startswith("/"):
+                hit = [x for x in os.listdir(HOME) if fold(x) == fold(d)] if os.path.isdir(HOME) else []
+                d = os.path.join(HOME, hit[0] if hit else d)
+            f["dir"] = d.rstrip("/")
+        elif t.startswith(("obsah:", "content:")):
+            f["content"] = tok.split(":", 1)[1]
+        elif t in ("skryte", "hidden"):
+            f["hidden"] = True
+        else:
+            f["words"].append(t)
+    if obsah and not f["content"] and f["words"]:
+        f["content"] = " ".join(f["words"])
+    return f
+
+
+def run(cmd, timeout=3):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+def candidates(f, root):
+    """mená z indexu (plocate, celý domov za ~10 ms) + súbory zmenené za posledný deň (index ich ešte nemá)."""
+    out = set()
+    key = max(f["words"], key=len) if f["words"] else (f["exact"][0] if f["exact"] else "")
+    if key and shutil.which("locate"):
+        # plocate hľadá podreťazec v celej ceste bez ohľadu na veľkosť písmen; diakritiku dorieši skóre
+        for p in run(["locate", "-i", "-l", "4000", "--", root + "/*" + key[:12] + "*"]):
+            out.add(p)
+    fd = shutil.which("fd") or shutil.which("fdfind")
+    if fd:
+        base = [fd, "--absolute-path", "--color", "never"] + (["--hidden"] if f["hidden"] else [])
+        if not key or not out:      # bez indexu (alebo prázdny): živé hľadanie, aj podľa filtrov
+            args = base + ["--max-results", "6000"]
+            if f["ext"]:
+                for e in sorted(f["ext"]):
+                    args += ["-e", e]
+            if f["after"]:
+                args += ["--changed-after", f["after"].strftime("%Y-%m-%d %H:%M:%S")]
+            if f["dirs_only"]:
+                args += ["-t", "d"]
+            out.update(run(args + ["--", ".", root], timeout=4))
+        else:
+            out.update(run(base + ["--changed-within", "1d", "--", ".", root], timeout=2))
+    else:
+        for dp, dns, fns in os.walk(root):
+            dns[:] = [d for d in dns if f["hidden"] or not d.startswith(".")]
+            out.update(os.path.join(dp, n) for n in dns + fns)
+            if len(out) > 20000:
+                break
+    return out
+
+
+def subseq(needle, hay):
+    """preklepy a skratky: „fktr“ nájde „faktura“ (písmená v poradí)"""
+    it = iter(hay)
+    return all(c in it for c in needle)
+
+
+def score(path, f, opened, now):
+    name = os.path.basename(path.rstrip("/"))
+    fn, fp = fold(name), fold(path)
+    s = 0.0
+    for e in f["exact"]:
+        if e not in fn:
+            return None
+        s += 60
+    for w in f["words"]:
+        if fn == w or os.path.splitext(fn)[0] == w:
+            s += 100
+        elif fn.startswith(w):
+            s += 70
+        elif re.search(r"(^|[\s._\-()\[\]])" + re.escape(w), fn):
+            s += 55
+        elif w in fn:
+            s += 40
+        elif w in fp:
+            s += 15                                    # v mene priečinka po ceste
+        elif len(w) >= 3 and subseq(w, fn):
+            s += 12
+        else:
+            return None
+    if not f["hidden"] and "/." in path[len(HOME):]:
+        return None
+    if JUNK.search(path):
+        s -= 40
+    rel = path[len(HOME) + 1:] if path.startswith(HOME + "/") else path
+    if rel.split("/", 1)[0] in USER_DIRS:
+        s += 10
+    s -= rel.count("/") * 2.5                         # plytšie skôr
+    if path in opened:
+        s += 30 + min(20, opened[path] * 4)            # čo otváraš, ide hore
+    return s
+
+
+def main(argv):
+    as_json, mx, typ, obsah, words = False, 12, None, False, []
+    it = iter(argv)
+    for a in it:
+        if a == "--json": as_json = True
+        elif a == "--max": mx = int(next(it, "12"))
+        elif a == "--typ": typ = next(it, None)
+        elif a == "--obsah": obsah = True
+        elif a == "--otvorene":                         # latte-hladaj --otvorene CESTA: zapamätá otvorenie
+            p = next(it, "")
+            try:
+                d = json.load(open(OPENED))
+            except (OSError, ValueError):
+                d = {}
+            d[p] = d.get(p, 0) + 1
+            d = dict(sorted(d.items(), key=lambda kv: -kv[1])[:500])
+            os.makedirs(STATE, exist_ok=True)
+            json.dump(d, open(OPENED, "w"))
+            return 0
+        else: words.append(a)
+    f = parse(" ".join(words), typ, obsah)
+    root = f["dir"] or HOME
+    if not (f["words"] or f["exact"] or f["ext"] or f["after"] or f["min"] or f["dirs_only"] or f["content"]):
+        return 0
+    try:
+        opened = json.load(open(OPENED))
+    except (OSError, ValueError):
+        opened = {}
+    # nedávno použité súbory GTK (recently-used.xbel) — aj z iných aplikácií
+    try:
+        for m in re.finditer(r'href="file://([^"]+)"', open(HOME + "/.local/share/recently-used.xbel", encoding="utf-8").read()):
+            p = urllib.parse.unquote(m.group(1))
+            opened[p] = opened.get(p, 0) + 1
+    except OSError:
+        pass
+    now = time.time()
+    results = []
+    name_search = bool(f["words"] or f["exact"] or f["ext"] or f["after"] or f["min"] or f["max"] or f["dirs_only"])
+    if f["content"] and f["words"] and " ".join(f["words"]) == f["content"]:
+        name_search = True                              # --obsah: meno aj obsah
+    for p in (candidates(f, root) if name_search else ()):
+        p = p.rstrip("/")
+        if not p.startswith(root + "/"):
+            continue
+        sc = score(p, f, opened, now)
+        if sc is None or (sc < 0 and not f["hidden"]):   # node_modules, .cache… iba keď nič iné
+            continue
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        isdir = os.path.isdir(p)
+        if (f["dirs_only"] and not isdir) or (f["files_only"] and isdir):
+            continue
+        if f["ext"] and os.path.splitext(p)[1].lower().lstrip(".") not in f["ext"]:
+            continue
+        if (f["min"] and st.st_size < f["min"]) or (f["max"] and st.st_size > f["max"]):
+            continue
+        if (f["after"] and st.st_mtime < f["after"].timestamp()) or (f["before"] and st.st_mtime >= f["before"].timestamp()):
+            continue
+        if not f["words"] and not f["exact"]:
+            sc += max(0, 30 - (now - st.st_mtime) / 86400)   # iba filtre: najnovšie navrchu
+        results.append({"path": p, "dir": isdir, "size": st.st_size, "mtime": int(st.st_mtime), "score": round(sc, 1), "line": ""})
+    # obsah: ripgrep v textových súboroch (ignoruje binárne a .gitignore), prvý zhodný riadok
+    if f["content"] and shutil.which("rg"):
+        seen = {r["path"] for r in results}
+        args = ["rg", "-i", "-F", "-m", "1", "--no-heading", "--with-filename", "-n", "--max-filesize", "5M", "--max-columns", "200"]
+        if f["ext"]:
+            for e in sorted(f["ext"]):
+                args += ["-g", "*." + e]
+        for line in run(args + ["--", f["content"], root], timeout=5)[:400]:
+            m = re.match(r"^(.*?):(\d+):(.*)$", line)
+            if not m or JUNK.search(m.group(1)):
+                continue
+            p = m.group(1)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if (f["after"] and st.st_mtime < f["after"].timestamp()) or (f["before"] and st.st_mtime >= f["before"].timestamp()):
+                continue
+            txt = m.group(3).strip()
+            if p in seen:
+                for r in results:
+                    if r["path"] == p:
+                        r["line"], r["score"] = "%s: %s" % (m.group(2), txt), r["score"] + 20
+            else:
+                results.append({"path": p, "dir": False, "size": st.st_size, "mtime": int(st.st_mtime), "line": "%s: %s" % (m.group(2), txt),
+                                "score": 35 + (30 if p in opened else 0) - p[len(root):].count("/") * 2.5})
+    results.sort(key=lambda r: (-r["score"], -r["mtime"]))
+    for r in results[:mx]:
+        print(json.dumps(r, ensure_ascii=False) if as_json else r["path"] + ("/" if r["dir"] else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

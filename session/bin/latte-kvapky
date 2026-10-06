@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# latte-kvapky — skúšobná plocha LatteOS Kvapky (latteGoo): bez klasickej lišty a jej pomocníkov, živá tapeta
+# a tekuté kvapky (session/kvapky, pleamar). Noctalia beží ďalej, ale bez lišty (bar-hide) a bez servera upozornení
+# (tie sú kvapôčky na Hodinách): robí to, čo vie — zamknutie, Alt+Tab, snímky, OSD, klávesy médií, ovládacie centrum.
+#   latte-kvapky start    autoštart relácie „LatteOS Kvapky“ (hyprland.lua pri LATTE_VARIANT=kvapky)
+#   latte-kvapky skusit   z bežiacej klasickej plochy do Kvapiek bez odhlásenia (vypne Noctaliu a pomocníkov)
+#   latte-kvapky spat     späť na klasickú plochu (Noctalia a pomocníci ako pri štarte, bežné okraje okien)
+#   latte-kvapky stav     „kvapky“ alebo „klasicke“
+#   latte-kvapky okraj [dole|hore|vlavo|vpravo POLOHA]   okraj lišty-kvapky (presun ťahaním); bez argumentov vypíše
+#   latte-kvapky uloz spustac|widgety|casovace|udalosti|ulohy JSON   uloží nastavenia (logika Kvapiek nevie zapisovať súbory)
+#   latte-kvapky farba IKONA   číslo farby ikony v palete scény (hrozno upozornení DaNoGoo)
+#   latte-kvapky miesto TITUL AX AY SX SY   okno s týmto titulkom sa otvorí rohom pri uchu kvapky
+#   latte-kvapky panel-poloha PANEL POLOHA   panel Noctalie pri kvapke (control_center|clipboard|wallpaper|session, bottom_right…)
+# Ostáva aj Kapsa (história schránky), App Manager a systémové ponuky (Ctrl+Alt+Del, kvapka vypínač).
+set -u
+share=/usr/share/latteos
+# stav Noctalie: klasický LatteOS ~/.local/state/latteos/noctalia, Kvapky ~/.local/state/latteos/kvapky/noctalia —
+# navzájom sa nedeformujú (30. 9.); pôvodná Noctalia má svoj ~/.local/state/noctalia (latte-session)
+st_classic="${XDG_STATE_HOME:-$HOME/.local/state}/latteos"
+# Noctalia so záplatou rohovej lišty (setup/lab/noctalia-kvapky.sh); bez nej pôvodná, bez rohovej lišty
+nkvapky=/usr/lib64/latteos/noctalia-kvapky/noctalia
+noc_bin() { if [ -x "$nkvapky" ]; then echo "$nkvapky"; else echo noctalia; fi; }
+ndir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/noctalia-kvapky"
+# rohová lišta: šírka podľa widgetov (efektívny zoznam aj po zmene v nastaveniach Noctalie) a ikon programov na pozadí
+roh_start() {   # $1 počet ikon na lište → margin_start (px od ľavého kraja monitora)
+    local w n
+    w="$(hyprctl -j monitors 2>/dev/null | python3 -c 'import json,sys; m=json.load(sys.stdin); print(int(m[0]["width"]/m[0].get("scale",1)))' 2>/dev/null || echo 1920)"
+    n="$(NOCTALIA_ASSETS_DIR=/usr/share/noctalia/assets NOCTALIA_CONFIG_HOME="$ndir" NOCTALIA_STATE_HOME="$st_kvapky" "$(noc_bin)" config export 2>/dev/null \
+         | python3 -c 'import sys,tomllib; c=tomllib.loads(sys.stdin.read()); e=c.get("bar",{}).get("roh",{}).get("end",[]); print(len([x for x in e if x!="tray"]))' 2>/dev/null || echo 3)"
+    echo $(( w - (26 + 48 * n + 28 * ${1:-0}) ))
+}
+st_kvapky="$st_classic/kvapky"
+# scéna: engine Goo; pôvodná plocha Kvapky (session/kvapky/kvapka.plm) sa od 6. 10. nenasadzuje — na pokusy z repa
+# cez LATTE_KVAPKY_SCENE
+scene="${LATTE_KVAPKY_SCENE:-$share/goo/goo.plm}"
+# engine beží na najmenšej scéne, do ktorej sa zmestí (prázdne miesta stoja CPU každú snímku): 32 / 64 / 128 miest.
+# Koľko práve treba, si pamätá ~/.local/state/latteos/goo/miesta (píše `latte-kvapky miesta N` na žiadosť enginu);
+# menšie scény sú v $share/goo/m32 a m64 (gen.py --n pri inštalácii). Vlastná scéna z LATTE_KVAPKY_SCENE sa nemení.
+miesta_subor="$st_classic/goo/miesta"
+if [ "$scene" = "$share/goo/goo.plm" ]; then
+    case "$(cat "$miesta_subor" 2>/dev/null)" in
+        128) ;;
+        64) [ -f "$share/goo/m64/goo.plm" ] && scene="$share/goo/m64/goo.plm" ;;
+        *)  [ -f "$share/goo/m32/goo.plm" ] && scene="$share/goo/m32/goo.plm" ;;
+    esac
+fi
+pleamar="${PLEAMAR:-$(command -v pleamar || echo /usr/bin/pleamar)}"
+# klasickí pomocníci z hyprland.lua (autoštart), ktorí patria k Noctalii
+# (1. 10.) Digitálna pohoda (well-being) nie je pomocník klasickej lišty — beží aj v Kvapkách (pravý klik na Hodiny)
+classic="netznak kapsavyrez nahlad plocha rychle maskot zivatapeta"
+
+qs_app() { pgrep -f "latteos/apps/$1\.qml" >/dev/null; }
+start_app() { qs_app "$1" || setsid -f latte-app "$1" >/dev/null 2>&1; }
+
+flag="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/kvapky"          # plocha Kvapky beží; obsah = okraj lišty
+okraj="${XDG_STATE_HOME:-$HOME/.local/state}/latteos/kvapka-okraj"    # „dole 0.400“ (pamätá sa)
+side() { s="$(cut -d' ' -f1 "$okraj" 2>/dev/null)"; case "$s" in dole|hore|vlavo|vpravo) echo "$s" ;; *) echo dole ;; esac; }
+gaps() {   # pás pri okraji lišty pre kvapku (Noctalia si ho inak vyhradí sama): rezerva monitora, ktorú rešpektujú
+          # aj maximalizované okná (latte.kvapky_reserve v hyprland.lua); príznak ju obnoví po reload-e
+    if [ "$1" = off ]; then
+        rm -f "$flag"; hyprctl eval 'latte.kvapky_reserve(nil)' >/dev/null
+    else
+        mkdir -p "$(dirname "$flag")"; echo "$1" > "$flag"
+        hyprctl eval "latte.kvapky_reserve('$1')" >/dev/null
+    fi
+}
+
+# Noctalia pre Kvapky: rovnaká konfigurácia ako v klasickej ploche (odkazy), navyše zz-kvapky.toml — Noctalia
+# zlúči všetky *.toml v priečinku v abecednom poradí
+noctalia_up() {
+    pgrep -x noctalia >/dev/null && return
+    local base="${XDG_CONFIG_HOME:-$HOME/.config}/latteos/noctalia" dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/noctalia-kvapky"
+    [ -f "$base/config.toml" ] || base="$share/noctalia"
+    rm -rf "$dir"; mkdir -p "$dir/noctalia"
+    for f in "$base"/*; do ln -s "$f" "$dir/noctalia/"; done
+    cat > "$dir/noctalia/zz-kvapky.toml" <<'EOF2'
+# plocha Kvapky: lištu nahrádzajú kvapky, upozornenia prijíma pleamar (kvapôčky na Hodinách),
+# tapetu kreslí latte-tapety cez mpvpaper (živú aj statickú) — Noctalia by ju inak prekryla
+[bar.main]
+enabled = false
+
+[notification]
+enable_daemon = false
+
+[wallpaper]
+enabled = false
+
+# ovládacie centrum Noctalie sa otvára z rohovej lišty vpravo dole — preto vpravo dole, nad lištou (6. 10.:
+# „musí sa otvoriť nad lištou napravo“; predtým vľavo dole nad Hodinami pôvodnej plochy Kvapky)
+[shell.panel]
+control_center_placement = "floating"
+control_center_position  = "bottom_right"
+EOF2
+    # rohová lišta Noctalie vpravo dole (iba so záplatou): iba pravá časť, prilepená do rohu, šírka podľa widgetov;
+    # vpravo sa vyduje hore do bočnej steny, vľavo sa rozleje po spodnom okraji (goo). Widgety a doplnky sa dajú
+    # meniť v nastaveniach Noctalie; šírku prepočíta `latte-kvapky roh-sirka` (logika Kvapiek pri zmene ikon lišty)
+    if [ -x "$nkvapky" ]; then
+        cat >> "$dir/noctalia/zz-kvapky.toml" <<'EOF2'
+
+[bar.roh]
+enabled = true
+position = "bottom"
+thickness = 44
+margin_ends = 0
+margin_start = 1640
+margin_end = 0
+margin_edge = 0
+radius_top_left = 22
+radius_top_right = 22
+radius_bottom_left = 20
+radius_bottom_right = 0
+concave_edge_corners = true
+reserve_space = false
+padding = 12
+start = []
+center = []
+end = ["tray", "network", "volume", "control-center"]
+EOF2
+        sed -i "s/^margin_start = .*/margin_start = $(roh_start 0)/" "$dir/noctalia/zz-kvapky.toml"
+    fi
+    # prvý štart Kvapiek: nastavenia sa skopírujú z klasického LatteOS, potom každá plocha žije sama
+    if [ ! -e "$st_kvapky/noctalia/settings.toml" ]; then
+        mkdir -p "$st_kvapky/noctalia"
+        [ -f "$st_classic/noctalia/settings.toml" ] && cp "$st_classic/noctalia/settings.toml" "$st_kvapky/noctalia/"
+        touch "$st_kvapky/noctalia/.setup-complete"
+    fi
+    NOCTALIA_ASSETS_DIR=/usr/share/noctalia/assets NOCTALIA_CONFIG_HOME="$dir" NOCTALIA_STATE_HOME="$st_kvapky" \
+        setsid -f "$(noc_bin)" >/dev/null 2>&1
+    ( sleep 3; latte-theme noctalia ) >/dev/null 2>&1 &     # téma LatteOS je spoločná, stav Noctalie nie
+}
+
+# beží engine (scéna goo.plm) tohto účtu na danom monitore? (iba proces s menom pleamar, nie čokoľvek s tým textom)
+engine_bezi() {
+    local p
+    for p in $(pgrep -u "$(id -u)" -x pleamar); do
+        tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- "/goo\.plm .*--screen $1 " && return 0
+    done
+    return 1
+}
+scene_up() {
+    [ -x "$pleamar" ] && [ -f "$scene" ] || { notify-send -a LatteOS "Kvapky" "chýba pleamar alebo scéna ($scene)"; return 1; }
+    local dir="${XDG_STATE_HOME:-$HOME/.local/state}/latteos"
+    case "$scene" in
+    */goo.plm)
+        # Engine Goo: hlavný monitor (ľavý horný roh 0,0) má celú plochu so všetkými kvapkami; každý ďalší monitor má
+        # vlastnú inštanciu iba s GooBarom a oknami toho monitora (ako panel úloh Windows na druhej obrazovke).
+        # Jedna inštancia na monitor: pleamar má pre kópie jednej scény spoločný stav, takže by na monitoroch
+        # s rôznym rozlíšením boli polohy zle. Bez vedľajších lišt: ~/.config/latteos/goobar-monitory s obsahom „off“.
+        # PLEAMAR_GENERIC=window: zoznam okien z wlr-foreign-toplevel, kurzor z Hyprlandu (resources/patches/pleamar-…)
+        local mons hlavny meno id mala="$share/goo/m32/goo.plm" prvy=1
+        mons=$(hyprctl -j monitors 2>/dev/null | python3 -c 'import json, sys
+m = json.load(sys.stdin)
+m.sort(key=lambda x: (not (x["x"] == 0 and x["y"] == 0), x["x"], x["y"]))
+for x in m: print(x["name"], x["id"])' 2>/dev/null)
+        [ -f "$mala" ] || mala="$scene"
+        [ -n "$mons" ] || mons="- -"
+        echo "$mons" | while read -r meno id; do
+            if [ $prvy = 1 ]; then
+                prvy=0
+                if [ "$meno" = - ]; then                 # monitory sa nedali zistiť: jedna inštancia bez výberu
+                    pgrep -u "$(id -u)" -x pleamar >/dev/null && continue
+                    LATTE_VARIANT=kvapky PLEAMAR_GENERIC=window setsid -f "$pleamar" --scene "$scene" --no-hud >"$dir/kvapky.log" 2>&1
+                    continue
+                fi
+                engine_bezi "$meno" && continue
+                [ -f "$dir/kvapky.log" ] && mv -f "$dir/kvapky.log" "$dir/kvapky.log.1"   # predošlý log ostáva ako .1
+                LATTE_GOO_MONITOR="$meno" LATTE_GOO_MONITOR_ID="$id" LATTE_VARIANT=kvapky PLEAMAR_GENERIC=window \
+                    setsid -f "$pleamar" --scene "$scene" --no-hud --screen "$meno" >"$dir/kvapky.log" 2>&1
+                sleep 0.6                                # hlavná inštancia si prvá vezme meno „goo“ (pleamar --say goo)
+            else
+                [ "$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/goobar-monitory" 2>/dev/null)" = off ] && continue
+                engine_bezi "$meno" && continue
+                LATTE_GOO_VEDLAJSI=1 LATTE_GOO_STAV="$meno" LATTE_GOO_MONITOR="$meno" LATTE_GOO_MONITOR_ID="$id" \
+                    LATTE_VARIANT=kvapky PLEAMAR_GENERIC=window \
+                    setsid -f "$pleamar" --scene "$mala" --no-hud --screen "$meno" >"$dir/kvapky-$meno.log" 2>&1
+            fi
+        done
+        ;;
+    *)
+        # iná scéna (na pokusy cez LATTE_KVAPKY_SCENE): jedna inštancia
+        pgrep -u "$(id -u)" -x pleamar >/dev/null && return
+        [ -f "$dir/kvapky.log" ] && mv -f "$dir/kvapky.log" "$dir/kvapky.log.1"
+        LATTE_VARIANT=kvapky PLEAMAR_GENERIC=window setsid -f "$pleamar" --scene "$scene" --no-hud >"$dir/kvapky.log" 2>&1
+        ;;
+    esac
+}
+
+case "${1:-}" in
+    miesta)   # engine si pýta scénu s iným počtom miest: zapamätať a scénu vymeniť (kvapky sa vrátia na svoje miesta)
+        case "${2:-}" in 32|64|128) ;; *) echo "latte-kvapky miesta 32|64|128" >&2; exit 2 ;; esac
+        mkdir -p "$(dirname "$miesta_subor")"; echo "$2" > "$miesta_subor"
+        for p in $(pgrep -u "$(id -u)" -x pleamar); do
+            tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q '/goo\.plm' && kill "$p"
+        done
+        sleep 0.7
+        exec "$0" scena
+        ;;
+    scena)    # iba scéna (bez tapety, Noctalie a pomocníkov)
+        scene_up
+        ;;
+    start)
+        mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/latteos"
+        gaps "$(side)"
+        # kvapky ako prvé: po prihlásení nadväzujú na jeho posledný obraz (LoginGoo na mieste GooPower na espresso
+        # pozadí), tapeta príde pod ne
+        scene_up
+        latte-tapety obnov --bez-shellu
+        # profil účtu v jednom dokumente: beží s plochou a drží ho v zhode s nastaveniami (oboma smermi)
+        pgrep -u "$(id -u)" -f 'latte-gooconfig sleduj' >/dev/null || setsid -f latte-gooconfig sleduj >"${XDG_STATE_HOME:-$HOME/.local/state}/latteos/gooconfig.log" 2>&1
+        pgrep -f "wl-paste --type text --watch latte-kapsa-store" >/dev/null || setsid -f wl-paste --type text --watch latte-kapsa-store
+        pgrep -f "wl-paste --type image --watch latte-kapsa-store" >/dev/null || setsid -f wl-paste --type image --watch latte-kapsa-store
+        start_app spustac
+        start_app ponuka
+        start_app pohoda                        # well-being: čas v aplikáciách (skrytá, na pozadí)
+        noctalia_up
+        ;;
+    skusit)
+        pkill -x noctalia; sleep 0.5          # klasická Noctalia (s lištou) → nahradí ju tá pre Kvapky
+        for a in $classic; do pkill -f "latteos/apps/$a\.qml"; done
+        pkill -u "$(id -u)" -x pleamar; sleep 0.3          # kvapka z klasickej plochy (ak beží) sa spustí znova ako samostatná
+        exec "$0" start
+        ;;
+    spat)
+        pkill -u "$(id -u)" -x pleamar
+        gaps off
+        pkill -x noctalia; sleep 0.5          # Noctalia pre Kvapky → klasická (s lištou a upozorneniami)
+        if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/noctalia/config.toml" ]; then
+            export NOCTALIA_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/latteos"
+        else
+            export NOCTALIA_CONFIG_HOME="$share"
+        fi
+        NOCTALIA_STATE_HOME="$st_classic" setsid -f noctalia >/dev/null 2>&1
+        ( sleep 3; latte-theme noctalia ) >/dev/null 2>&1 &
+        [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/latteos/live-wallpaper" ] && start_app zivatapeta
+        for a in netznak kapsavyrez nahlad plocha rychle maskot; do start_app "$a"; done
+        # statická tapeta z mpvpaperu (bez shellu) ustúpi natívnej tapete Noctalie; živé video ostáva
+        latte-tapety obnov >/dev/null 2>&1
+        ;;
+    roh-sirka)
+        # šírka rohovej lišty podľa widgetov a počtu ikon programov na pozadí ($2); iba ak sa zmenila
+        f="$ndir/noctalia/zz-kvapky.toml"
+        grep -q '^\[bar.roh\]' "$f" 2>/dev/null || exit 0
+        m="$(roh_start "${2:-0}")"
+        grep -q "^margin_start = $m$" "$f" && exit 0
+        sed -i "s/^margin_start = .*/margin_start = $m/" "$f"
+        noctalia msg config-reload >/dev/null 2>&1
+        ;;
+    panel-poloha)
+        # panel Noctalie sa otvorí pri kvapke, ktorá ho volá (kvapky sa dajú presúvať): poloha z 9 polôh Noctalie,
+        # ktorú zvolí logika Kvapiek; zapíše sa do konfigurácie Noctalie pre Kvapky a tá sa znova načíta
+        case "${2:-}" in control_center|clipboard|wallpaper|session) ;; *) echo "neznámy panel: ${2:-}" >&2; exit 1 ;; esac
+        case "${3:-}" in top_left|top_center|top_right|center_left|center|center_right|bottom_left|bottom_center|bottom_right) ;;
+            *) echo "neznáma poloha: ${3:-}" >&2; exit 1 ;; esac
+        f="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos/noctalia-kvapky/noctalia/zz-kvapky.toml"
+        [ -f "$f" ] || exit 1
+        grep -q '^\[shell.panel\]' "$f" || printf '\n[shell.panel]\n' >> "$f"
+        for k in placement position; do
+            v="$([ $k = placement ] && echo floating || echo "$3")"
+            if grep -q "^${2}_${k} *=" "$f"; then sed -i "s|^${2}_${k} *=.*|${2}_${k} = \"$v\"|" "$f"
+            else sed -i "/^\[shell.panel\]/a ${2}_${k} = \"$v\"" "$f"; fi
+        done
+        noctalia msg config-reload >/dev/null 2>&1
+        ;;
+    uloz)
+        # logika Kvapiek nevie zapisovať súbory: uloží, čo jej patrí (iba tieto súbory, atomicky)
+        case "${2:-}" in
+            spustac) f="${XDG_CONFIG_HOME:-$HOME/.config}/latteos/spustac.json" ;;
+            widgety) f="${XDG_CONFIG_HOME:-$HOME/.config}/latteos/kvapky-widgety.json" ;;
+            casovace) f="${XDG_DATA_HOME:-$HOME/.local/share}/latteos/casovace.json" ;;   # stopky, minútka, budíky (spoločné s klasickým LatteOS)
+            udalosti) f="${XDG_DATA_HOME:-$HOME/.local/share}/latteos/events.json" ;;    # kalendár (spoločné s klasickým LatteOS)
+            ulohy) f="${XDG_DATA_HOME:-$HOME/.local/share}/latteos/todo.json" ;;
+            *) echo "latte-kvapky uloz: neznámy súbor: ${2:-}" >&2; exit 1 ;;
+        esac
+        mkdir -p "$(dirname "$f")"; printf '%s\n' "${3:-}" > "$f.new" && mv -f "$f.new" "$f"
+        ;;
+    miesto)
+        # okno z kvapky (pravidlo 9): TITUL, bod ucha AX AY a smer rastu SX SY (±1) — Hyprland (latte/windows.lua)
+        # pri otvorení okna s týmto titulkom ho prisunie rohom k uchu; záznam platí 10 s
+        d="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos"; mkdir -p "$d"
+        printf '%s|%d|%d|%d|%d|%d\n' "${2:?titul}" "${3:?x}" "${4:?y}" "${5:-1}" "${6:-1}" "$(date +%s)" > "$d/kvapky-miesto"
+        ;;
+    okno)
+        # okno z bubliny (pravidlo 14): TITUL a presný obdĺžnik X Y W H, kam sa bublina nafúkla — Hyprland
+        # (latte/windows.lua) okno s týmto titulkom pri otvorení postaví presne tam a bez vlastnej animácie; platí 10 s
+        d="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/latteos"; mkdir -p "$d"
+        printf '%s|%d|%d|%d|%d|%d\n' "${2:?titul}" "${3:?x}" "${4:?y}" "${5:?w}" "${6:?h}" "$(date +%s)" > "$d/kvapky-okno"
+        ;;
+    farba)
+        # farba ikony aplikácie pre hrozno upozornení DaNoGoo: prevládajúci sýty odtieň ikony → číslo farby v palete
+        # scény (0 červená … 13 ružová, 14 svetlosivá, 15 tmavosivá); výsledok sa pamätá v ~/.cache/latteos/farby-ikon.json
+        exec python3 - "${2:-}" <<'PY'
+import colorsys, glob, json, os, subprocess, sys, tempfile
+name = sys.argv[1]
+cache = os.path.expanduser("~/.cache/latteos/farby-ikon.json")
+try: memo = json.load(open(cache))
+except Exception: memo = {}
+if name in memo: print(memo[name]); sys.exit(0)
+def find(n):
+    if n.startswith("/") and os.path.exists(n): return n
+    dirs = [os.path.expanduser("~/.local/share/icons")] + [d + "/icons" for d in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")]
+    best = None
+    for d in dirs:
+        for sub in ("512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "scalable"):
+            for ext in ("png", "svg"):
+                for f in glob.glob(f"{d}/hicolor/{sub}/apps/{n}.{ext}") + glob.glob(f"{d}/*/{sub}/apps/{n}.{ext}"):
+                    return f
+    for f in glob.glob(f"/usr/share/pixmaps/{n}.*"): return f
+    return best
+path = find(name)
+idx = 15
+if path:
+    try:
+        from PIL import Image
+        if path.endswith(".svg"):
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+            subprocess.run(["magick", "-background", "none", "-density", "96", path, "-resize", "64x64", tmp], check=True, capture_output=True)
+            img = Image.open(tmp); os.unlink(tmp)
+        else:
+            img = Image.open(path)
+        img = img.convert("RGBA").resize((48, 48))
+        hues = [0.0] * 12; light, n = 0.0, 0
+        px = img.tobytes()
+        for i in range(0, len(px), 4):
+            r, g, b, a = px[i], px[i + 1], px[i + 2], px[i + 3]
+            if a < 128: continue
+            h, l, sat = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+            light += l; n += 1
+            if sat > 0.35 and 0.15 < l < 0.85:
+                hues[int(h * 12) % 12] += sat
+        if n:
+            top = max(range(12), key=lambda i: hues[i])
+            if hues[top] > n * 0.08:
+                # 12 odtieňov kruhu → paleta scény (0 červená, 1 oranžová, 2 jantárová, 3 žltá, 4 limetková, 5 zelená,
+                # 6 tyrkysová, 7 azúrová, 8 modrá, 9 indigo, 10 fialová, 11 purpurová, 13 ružová)
+                idx = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13][top]
+            else:
+                idx = 14 if light / n > 0.5 else 15
+    except Exception:
+        idx = 15
+if not path: print(idx, "-"); sys.exit(0)     # ikonu nenašiel („-“ = náhradná ikona); nepamätať, aplikácia môže pribudnúť
+memo[name] = idx
+os.makedirs(os.path.dirname(cache), exist_ok=True)
+json.dump(memo, open(cache, "w"))
+print(idx)
+PY
+        ;;
+    okraj)
+        if [ -z "${2:-}" ]; then cat "$okraj" 2>/dev/null || echo "dole 0.400"; exit 0; fi
+        case "$2" in dole|hore|vlavo|vpravo) ;; *) echo "neznámy okraj: $2" >&2; exit 1 ;; esac
+        mkdir -p "$(dirname "$okraj")"; echo "$2 ${3:-0.4}" > "$okraj"
+        [ -e "$flag" ] && gaps "$2"
+        ;;
+    stav)
+        if [ -e "$flag" ]; then echo kvapky; else echo klasicke; fi
+        ;;
+    *) sed -n '2,8p' "$0"; exit 1 ;;
+esac

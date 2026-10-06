@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # latte-greeter — obrazovka prihlásenia (greetd default_session). Voľba v /etc/latteos/boot.toml:
+#   greeter = "goo"       prihlásenie LatteOS GOO: všeobecná relácia (labwc s grafickou kartou) so scénou enginu Goo
+#                         (session/goo/login.plm, LATTEOS-GOO.md §6.2). Iba režim NORMAL s kartou; inak a po páde „latte“.
 #   greeter = "latte"     vlastný greeter LatteOS (Quickshell QML pod labwc + pixman, bez GPU)
 #   greeter = "tui"       textový tuigreet
 #   greeter = "noctalia"  Noctalia Greeter — pod greetd na VirtualBoxe prepúšťa pamäť jadra
-#                         (~36 MB/s, setup/f1/RESULTS.md), nepoužívať
+#                         (~36 MB/s, docs_zaloha/2026-09-23-f1-merania-vm.md), nepoužívať
 # Ak grafický greeter do 10 s spadne, nasleduje tuigreet.
 LATTE_MODE=safe LATTE_RENDERER=pixman
+# jazyk obrazovky prihlásenia = jazyk systému (greetd ho greeteru neodovzdá): texty cez i18n (greeter/I18n.qml)
+if [ -z "${LANG:-}" ] && [ -r /etc/locale.conf ]; then set -a; . /etc/locale.conf; set +a; fi
 [ -r /run/latteos/session.env ] && { set -a; . /run/latteos/session.env; set +a; }
 
-session="LatteOS"
-[ "$LATTE_MODE" = safe ] && session="LatteOS SAFE"
+# jediná relácia LatteOS v ponuke; núdzový režim spustí latte-session sám podľa LATTE_MODE
+session="LatteOS GOO"
 export LIBSEAT_BACKEND=logind
 [ "$LATTE_RENDERER" != hw ] && export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1
 
@@ -19,6 +23,25 @@ tui() {
 }
 greeter="$(sed -n 's/^greeter *= *"\?\([a-z]*\)"\?.*/\1/p' /etc/latteos/boot.toml 2>/dev/null)"
 greeter="${greeter:-latte}"
+
+# osirelé prihlasovače tohto účtu (napr. po `systemctl restart greetd` ostane starý labwc aj so scénou bežať): preč,
+# platný je iba tento
+pkill -u "$(id -u)" -x pleamar 2>/dev/null; pkill -u "$(id -u)" -x labwc 2>/dev/null; pkill -u "$(id -u)" -x qs 2>/dev/null
+
+if [ "$greeter" = goo ]; then
+    if [ "$LATTE_MODE" = normal ] && [ "$LATTE_RENDERER" = hw ] && [ -n "${XDG_RUNTIME_DIR:-}" ] \
+            && [ -f /usr/share/latteos/goo/login.plm ] && command -v pleamar >/dev/null; then
+        # súkromný priečinok scény na tmpfs: cez neho ide heslo k latte-greetd (nikdy nie argumentom ani na disk)
+        export XDG_DATA_HOME="$XDG_RUNTIME_DIR/latte-login" XDG_CURRENT_DESKTOP=labwc:wlroots
+        rm -rf "$XDG_DATA_HOME"; mkdir -p -m 700 "$XDG_DATA_HOME"
+        labwc -C /usr/share/latteos/greeter/labwc -s latte-goo-greeter
+        # skončila prihlásením (značku nechá latte-greetd koniec) → greetd spustí reláciu používateľa
+        [ -e "$XDG_DATA_HOME/pleamar/login/prihlaseny" ] && exit 0
+        logger -t latte-greeter "prihlásenie Goo skončilo bez prihlásenia → greeter LatteOS"
+        unset XDG_DATA_HOME
+    fi
+    greeter=latte
+fi
 
 if [ "$greeter" = latte ]; then
     # labwc + pixman + Qt software: overená kombinácia bez GL, pamäť neprepúšťa
